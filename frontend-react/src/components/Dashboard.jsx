@@ -1,4 +1,27 @@
-import React, { useState, useRef, useEffect } from 'react'
+import React, { useState, useRef, useEffect, useMemo, Component } from 'react'
+import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
+import { DivIcon } from 'leaflet'
+import 'leaflet/dist/leaflet.css'
+
+class MapErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, errorMsg: '' };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+  componentDidCatch(error, errorInfo) {
+    console.error("Map crash:", error, errorInfo);
+    this.setState({ errorMsg: error.toString() });
+  }
+  render() {
+    if (this.state.hasError) {
+      return <div style={{ padding: '20px', color: '#ff6b6b' }}>Map failed to load. Error: {this.state.errorMsg}</div>;
+    }
+    return this.props.children;
+  }
+}
 import { supabaseClient } from '../utils/supabase'
 import { MOCK_HOSPITALS } from '../utils/constants'
 
@@ -13,6 +36,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   const fileInputRef = useRef(null)
   const [userLocation, setUserLocation] = useState(null)
   const [locationError, setLocationError] = useState('')
+  const [nearbyMapHospitals, setNearbyMapHospitals] = useState([])
 
   // Get user display info
   const metadata = currentUser?.user_metadata || {}
@@ -38,10 +62,10 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     if ("geolocation" in navigator) {
       navigator.geolocation.getCurrentPosition(
         (position) => {
-          setUserLocation({
-            lat: position.coords.latitude,
-            lng: position.coords.longitude
-          });
+          const lat = position.coords.latitude;
+          const lng = position.coords.longitude;
+          setUserLocation({ lat, lng });
+          fetchNearbyMapHospitals(lat, lng);
         },
         (error) => {
           setLocationError("Location access denied. Showing default location.");
@@ -51,6 +75,35 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
       setLocationError("Geolocation is not supported. Showing default location.");
     }
   }, [])
+
+  const fetchNearbyMapHospitals = async (lat, lng) => {
+    const query = `
+      [out:json];
+      node["amenity"="hospital"](around:20000,${lat},${lng});
+      out 20;
+    `;
+    try {
+      const res = await fetch(`https://overpass-api.de/api/interpreter?data=${encodeURIComponent(query)}`);
+      const data = await res.json();
+      setNearbyMapHospitals(data.elements || []);
+    } catch (e) {
+      console.error('Failed to fetch hospitals from OSM:', e);
+    }
+  }
+
+  const customMarkerIcon = useMemo(() => new DivIcon({
+    className: 'custom-avatar-marker',
+    html: `<div class="marker-pin">${avatarUrl ? `<img src="${avatarUrl}" />` : `<div class="avatar-initial">${avatarInitial}</div>`}</div>`,
+    iconSize: [44, 44],
+    iconAnchor: [22, 44]
+  }), [avatarUrl, avatarInitial]);
+
+  const hospitalIcon = useMemo(() => new DivIcon({
+    className: 'hospital-marker',
+    html: `<div style="font-size: 24px; filter: drop-shadow(0 4px 6px rgba(0,0,0,0.3));">🏥</div>`,
+    iconSize: [30, 30],
+    iconAnchor: [15, 30]
+  }), []);
 
   // Auto-scroll chat
   useEffect(() => {
@@ -302,16 +355,36 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                 <h3 className="section-title-dark" style={{ margin: 0 }}>📍 Nearby Hospitals Map</h3>
                 {locationError && <span style={{ fontSize: '0.85rem', color: '#ff6b6b' }}>{locationError}</span>}
               </div>
-              <div style={{ borderRadius: '24px', overflow: 'hidden', border: '1px solid rgba(0,212,170,0.2)', boxShadow: '0 12px 40px rgba(0,0,0,0.2)' }}>
-                <iframe
-                  src={userLocation ? `https://www.google.com/maps?q=${userLocation.lat},${userLocation.lng}+hospitals&output=embed` : `https://www.google.com/maps?q=GLA+University+Mathura+hospitals&output=embed`}
-                  width="100%"
-                  height="450"
-                  style={{ border: 0, display: 'block' }}
-                  allowFullScreen=""
-                  loading="lazy"
-                  referrerPolicy="no-referrer-when-downgrade"
-                ></iframe>
+              <div style={{ borderRadius: '24px', overflow: 'hidden', border: '1px solid rgba(0,212,170,0.2)', boxShadow: '0 12px 40px rgba(0,0,0,0.2)', height: '450px' }}>
+                {userLocation ? (
+                  <MapErrorBoundary>
+                    <MapContainer center={[userLocation.lat, userLocation.lng]} zoom={13} scrollWheelZoom={false} style={{ height: '100%', width: '100%', zIndex: 1 }}>
+                      <TileLayer
+                        attribution='&copy; OpenStreetMap contributors'
+                        url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png"
+                      />
+                      <Marker position={[userLocation.lat, userLocation.lng]} icon={customMarkerIcon}>
+                        <Popup>You are exactly here!</Popup>
+                      </Marker>
+                      {nearbyMapHospitals.map(hospital => {
+                        if (!hospital || !hospital.lat || !hospital.lon) return null;
+                        return (
+                          <Marker key={hospital.id || Math.random()} position={[hospital.lat, hospital.lon]} icon={hospitalIcon}>
+                            <Popup>
+                              <strong>{hospital.tags?.name || 'Hospital/Clinic'}</strong>
+                              <br />
+                              {hospital.tags?.['addr:street'] || 'Nearby'}
+                            </Popup>
+                          </Marker>
+                        )
+                      })}
+                    </MapContainer>
+                  </MapErrorBoundary>
+                ) : (
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', background: '#0a1f2e', color: '#7a8ba7' }}>
+                    {locationError || "Waiting for location access..."}
+                  </div>
+                )}
               </div>
             </div>
           </div>

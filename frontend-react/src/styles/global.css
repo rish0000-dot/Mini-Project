@@ -1105,3 +1105,55 @@ h1, h2, h3, h4, .nav-logo {
 }
 
 .suggestion-btn:hover { background: rgba(0,212,170,0.2); }
+
+/* ===== LEAFLET overrides & Custom Marker ===== */
+.leaflet-container {
+    width: 100%;
+    height: 100%;
+    z-index: 10;
+}
+.leaflet-popup-content-wrapper {
+    background: var(--navy-dark) !important;
+    color: var(--white) !important;
+    border-radius: 12px;
+}
+.leaflet-popup-tip {
+    background: var(--navy-dark) !important;
+}
+
+.custom-avatar-marker {
+    background: none;
+    border: none;
+}
+
+.marker-pin {
+    width: 44px;
+    height: 44px;
+    border-radius: 50% 50% 50% 0;
+    background: var(--primary);
+    position: relative;
+    transform: rotate(-45deg);
+    box-shadow: -2px 2px 8px rgba(0,0,0,0.3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3px;
+    margin-top: -22px;
+    margin-left: -22px;
+}
+
+.marker-pin img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    transform: rotate(45deg);
+    background: var(--white);
+}
+
+.marker-pin .avatar-initial {
+    transform: rotate(45deg);
+    color: var(--navy-dark);
+    font-weight: 800;
+    font-size: 1.2rem;
+}
