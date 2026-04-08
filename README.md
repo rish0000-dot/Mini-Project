@@ -54,4 +54,4 @@ npm run dev
 - **Key Protection**: The OpenAI API key is hidden behind the Node.js proxy.
 - **File Validation**: Uploads are restricted to specific types and a 5MB size limit.
 
----
+
