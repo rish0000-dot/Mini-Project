@@ -3,3 +3,7 @@ backend/.env
 frontend-react/.env
 node_modules
 
+# Never track environment files
+**/.env
+**/.env.*
+
