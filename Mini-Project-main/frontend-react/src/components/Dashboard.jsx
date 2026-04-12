@@ -23,6 +23,38 @@ class MapErrorBoundary extends Component {
   }
 }
 
+class SectionErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false, errorMsg: '' }
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('Section crash:', error, errorInfo)
+    this.setState({ errorMsg: error?.toString?.() || 'Unexpected section error' })
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="hospital-card-dark" style={{ marginTop: '20px', borderColor: 'rgba(255,107,107,0.45)' }}>
+          <h3 style={{ color: '#ff8f8f', marginBottom: '8px' }}>Hospital Search crashed</h3>
+          <p className="h-address" style={{ color: '#ffd2d2' }}>
+            Something went wrong while loading hospitals. Please reload and try again.
+          </p>
+          <p style={{ color: '#ffb3b3', fontSize: '0.8rem', marginTop: '10px' }}>{this.state.errorMsg}</p>
+        </div>
+      )
+    }
+
+    return this.props.children
+  }
+}
+
 const HOSPITAL_MIN_DISTANCE_KM = 0.2
 const HOSPITAL_MAX_DISTANCE_KM = 50
 const LIVE_LOCATION_ZOOM = 15
@@ -84,9 +116,48 @@ const getHospitalSearchTokens = (hospital) => {
     .map((value) => String(value).toLowerCase())
 }
 
+const getLiveHospitalRating = (hospital) => {
+  const tags = hospital?.tags || {}
+  const rawRating = tags.stars || tags.rating || tags['healthcare:rating']
+  const parsedRating = Number.parseFloat(String(rawRating || '').replace(/[^0-9.]/g, ''))
+
+  if (Number.isFinite(parsedRating)) {
+    return Math.max(3.0, Math.min(5.0, parsedRating)).toFixed(1)
+  }
+
+  const seedText = `${hospital?.displayName || tags.name || hospital?.id || 'hospital'}`
+  const hash = seedText.split('').reduce((acc, char) => ((acc * 33 + char.charCodeAt(0)) >>> 0), 11)
+  return (3.9 + (hash % 10) * 0.1).toFixed(1)
+}
+
 const normalizeHospitalForSearch = (hospital, index) => {
+  if (!hospital || typeof hospital !== 'object') {
+    return {
+      key: `invalid-${index}`,
+      name: 'Unknown Hospital',
+      address: 'Address unavailable',
+      distanceText: '',
+      distanceKm: null,
+      rating: 'N/A',
+      source: 'Unknown',
+      tags: [],
+      details: [],
+      contact: {
+        phone: '',
+        website: '',
+      },
+      raw: null,
+      searchTokens: [],
+    }
+  }
+
   if (hospital?.displayName || typeof hospital?.distanceKm === 'number') {
     const tags = hospital?.tags || {}
+    const parsedDistance =
+      typeof hospital?.distanceKm === 'number'
+        ? hospital.distanceKm
+        : Number.parseFloat(hospital?.distanceKm)
+    const safeDistanceKm = Number.isFinite(parsedDistance) ? parsedDistance : null
     const liveTags = [
       tags.amenity && `Type: ${tags.amenity}`,
       tags.operator && `Operator: ${tags.operator}`,
@@ -103,9 +174,9 @@ const normalizeHospitalForSearch = (hospital, index) => {
       key: `live-${hospital.id || index}`,
       name: hospital.displayName || tags.name || 'Hospital',
       address: hospital.displayAddress || 'Nearby',
-      distanceText: `${hospital.distanceKm.toFixed(2)} km away`,
-      distanceKm: hospital.distanceKm,
-      rating: 'Live',
+      distanceText: safeDistanceKm !== null ? `${safeDistanceKm.toFixed(2)} km away` : 'Nearby',
+      distanceKm: safeDistanceKm,
+      rating: getLiveHospitalRating(hospital),
       source: 'OpenStreetMap',
       tags: liveTags.length > 0 ? liveTags : ['Live data'],
       details: liveTags.slice(0, 4),
@@ -120,9 +191,9 @@ const normalizeHospitalForSearch = (hospital, index) => {
 
   return {
     key: `mock-${index}`,
-    name: hospital.name,
-    address: hospital.address,
-    distanceText: hospital.distance,
+    name: hospital.name || 'Hospital',
+    address: hospital.address || 'Address unavailable',
+    distanceText: hospital.distance || '',
     distanceKm: null,
     rating: hospital.rating,
     source: 'Mock data',
@@ -134,6 +205,197 @@ const normalizeHospitalForSearch = (hospital, index) => {
     },
     raw: hospital,
     searchTokens: getHospitalSearchTokens(hospital),
+  }
+}
+
+const toTitleCase = (value = '') =>
+  value
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ')
+
+const getStableHash = (value = '') =>
+  value.split('').reduce((acc, ch) => ((acc * 31 + ch.charCodeAt(0)) >>> 0), 7)
+
+const getServiceBasePrice = (serviceName = '') => {
+  const service = serviceName.toLowerCase()
+
+  if (service.includes('mri')) return 4500
+  if (service.includes('ct')) return 3800
+  if (service.includes('x-ray') || service.includes('xray')) return 800
+  if (service.includes('ecg')) return 700
+  if (service.includes('icu')) return 6500
+  if (service.includes('blood')) return 600
+  if (service.includes('cardio')) return 2200
+  if (service.includes('neuro')) return 2800
+  if (service.includes('consult')) return 900
+
+  return 1600
+}
+
+const estimateServicePrice = ({ serviceName, hospitalName, rating }) => {
+  const basePrice = getServiceBasePrice(serviceName)
+  const ratingNumber = Number.parseFloat(String(rating || '').replace(/[^0-9.]/g, ''))
+  const normalizedRating = Number.isFinite(ratingNumber) ? Math.max(3.0, Math.min(5.0, ratingNumber)) : 4.2
+
+  // Price is mainly decided by hospital rating.
+  const ratingFactor =
+    normalizedRating >= 4.8 ? 1.30 :
+    normalizedRating >= 4.6 ? 1.22 :
+    normalizedRating >= 4.4 ? 1.15 :
+    normalizedRating >= 4.2 ? 1.08 :
+    normalizedRating >= 4.0 ? 1.00 :
+    normalizedRating >= 3.8 ? 0.93 :
+    0.86
+
+  const noiseHash = getStableHash(`${hospitalName}-${serviceName}`)
+  const minorVariation = 0.97 + ((noiseHash % 7) / 100)
+
+  const estimated = Math.round((basePrice * ratingFactor * minorVariation) / 10) * 10
+  return Math.max(estimated, 300)
+}
+
+const toDistanceLabel = (distanceKm) => {
+  if (typeof distanceKm === 'number' && Number.isFinite(distanceKm)) {
+    return `${distanceKm.toFixed(2)} km`
+  }
+
+  const parsed = Number.parseFloat(distanceKm)
+  if (Number.isFinite(parsed)) {
+    return `${parsed.toFixed(2)} km`
+  }
+
+  return null
+}
+
+const includesAny = (text, terms) => terms.some((term) => text.includes(term))
+
+const getHospitalMetaBlob = (hospital) => {
+  const tagsText = Array.isArray(hospital?.tags) ? hospital.tags.join(' ') : ''
+  const searchTokensText = Array.isArray(hospital?.searchTokens) ? hospital.searchTokens.join(' ') : ''
+  const detailsText = Array.isArray(hospital?.details) ? hospital.details.join(' ') : ''
+  return `${hospital?.name || ''} ${hospital?.address || ''} ${tagsText} ${searchTokensText} ${detailsText}`.toLowerCase()
+}
+
+const buildTriageAssessment = ({ symptomsText, severityLevel, durationDays }) => {
+  const text = String(symptomsText || '').trim().toLowerCase()
+  const safeDuration = Math.max(0, Number(durationDays) || 0)
+  const severity = Math.min(10, Math.max(1, Number(severityLevel) || 1))
+
+  if (!text) {
+    return {
+      score: 10,
+      urgency: 'Low',
+      color: '#5dd39e',
+      reasons: ['Add symptoms to generate a smarter triage score.'],
+      recommendation: 'Track symptoms for 24 hours. If they worsen, consult a doctor.',
+    }
+  }
+
+  const emergencyTerms = ['chest pain', 'breathless', 'shortness of breath', 'stroke', 'unconscious', 'seizure', 'heavy bleeding', 'heart attack']
+  const moderateTerms = ['fever', 'vomit', 'dizzy', 'migraine', 'abdominal', 'infection', 'persistent cough']
+
+  let score = 15 + severity * 6 + Math.min(20, safeDuration * 2)
+  const reasons = []
+
+  if (includesAny(text, emergencyTerms)) {
+    score += 45
+    reasons.push('Emergency symptoms detected in your input.')
+  }
+
+  if (includesAny(text, moderateTerms)) {
+    score += 15
+    reasons.push('Moderate-risk symptoms suggest medical consultation soon.')
+  }
+
+  if (safeDuration >= 4) {
+    score += 10
+    reasons.push('Symptoms lasting multiple days raise risk.')
+  }
+
+  score = Math.max(0, Math.min(100, score))
+
+  if (score >= 80) {
+    return {
+      score,
+      urgency: 'High',
+      color: '#ff6b6b',
+      reasons: reasons.length ? reasons : ['High-severity symptom pattern detected.'],
+      recommendation: 'Seek emergency care immediately and keep a trusted contact informed.',
+    }
+  }
+
+  if (score >= 50) {
+    return {
+      score,
+      urgency: 'Medium',
+      color: '#f7b955',
+      reasons: reasons.length ? reasons : ['Symptoms need timely medical attention.'],
+      recommendation: 'Book a hospital consultation in the next 12-24 hours.',
+    }
+  }
+
+  return {
+    score,
+    urgency: 'Low',
+    color: '#5dd39e',
+    reasons: reasons.length ? reasons : ['Current signals look low-risk but still monitor progression.'],
+    recommendation: 'Hydrate, rest, and monitor symptoms. Consult if symptoms increase.',
+  }
+}
+
+const scoreHospitalFit = (hospital, preferences) => {
+  const blob = getHospitalMetaBlob(hospital)
+  const distanceKm = typeof hospital?.distanceKm === 'number' ? hospital.distanceKm : 25
+  const rating = Number.parseFloat(String(hospital?.rating || '').replace(/[^0-9.]/g, '')) || 4.1
+
+  let score = 0
+  const reasons = []
+
+  const distanceScore = Math.max(0, 35 - distanceKm)
+  score += distanceScore
+  reasons.push(distanceKm <= 5 ? 'Very close to your location.' : 'Distance is acceptable for planned visit.')
+
+  score += Math.max(0, Math.min(20, (rating - 3) * 10))
+  reasons.push(`Hospital rating around ${rating.toFixed(1)}.`)
+
+  if (preferences.needsEmergency && includesAny(blob, ['emergency', '24/7', 'icu'])) {
+    score += 18
+    reasons.push('Emergency-capable signals found.')
+  }
+
+  if (preferences.needsWheelchair && includesAny(blob, ['wheelchair', 'accessible'])) {
+    score += 12
+    reasons.push('Accessibility support appears available.')
+  }
+
+  if (preferences.hospitalType !== 'any') {
+    const typeMatch = includesAny(blob, [preferences.hospitalType])
+    if (typeMatch) {
+      score += 10
+      reasons.push(`Matches preferred ${preferences.hospitalType} care.`)
+    }
+  }
+
+  const estimatedCost = estimateServicePrice({
+    serviceName: preferences.serviceName || 'Consultation',
+    hospitalName: hospital?.name || 'Hospital',
+    rating,
+  })
+
+  if (preferences.maxBudget >= estimatedCost) {
+    score += 15
+    reasons.push(`Estimated cost INR ${estimatedCost} fits your budget.`)
+  } else {
+    score -= 8
+    reasons.push(`Estimated cost INR ${estimatedCost} may exceed your budget.`)
+  }
+
+  return {
+    score: Math.max(0, Math.min(100, Math.round(score))),
+    reasons,
+    estimatedCost,
   }
 }
 
@@ -172,24 +434,34 @@ const DEFAULT_APPOINTMENTS = [
 
 import { supabaseClient } from '../utils/supabase'
 import { MOCK_HOSPITALS } from '../utils/constants'
+import { apiUrl, API_BASE_URL } from '../utils/api'
 import { buildHospitalDetail, createAppointmentRecord } from '../utils/hospitalDetails'
 
 function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setActiveFilter, onLogout }) {
+  const suggestedServices = ['X-Ray', 'MRI', 'CT Scan', 'ECG', 'ICU Bed', 'Blood Test']
   const [avatarUrl, setAvatarUrl] = useState(null)
   const [profileDraft, setProfileDraft] = useState({
     fullName: '',
     phone: '',
     city: '',
     bio: '',
+    password: '',
   })
   const [hospitalSearchQuery, setHospitalSearchQuery] = useState('')
+  const [serviceSearchQuery, setServiceSearchQuery] = useState('')
   const [filteredHospitals, setFilteredHospitals] = useState(MOCK_HOSPITALS)
   const [appointmentHistory, setAppointmentHistory] = useState(DEFAULT_APPOINTMENTS)
+  const [favoriteHospitals, setFavoriteHospitals] = useState([])
+  const [favoriteHospitalKeysPending, setFavoriteHospitalKeysPending] = useState([])
   const [activityHistory, setActivityHistory] = useState([])
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [isSending, setChatIsSending] = useState(false)
   const [isProfileEditing, setIsProfileEditing] = useState(false)
+  const [profileMemberId, setProfileMemberId] = useState('')
+  const [profilePassword, setProfilePassword] = useState('')
+  const [serviceSearchResults, setServiceSearchResults] = useState([])
+  const [serviceSearchLoading, setServiceSearchLoading] = useState(false)
   const chatContainerRef = useRef(null)
   const fileInputRef = useRef(null)
   const [userLocation, setUserLocation] = useState(null)
@@ -198,11 +470,63 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   const [nearbyPlaces, setNearbyPlaces] = useState([])
   const [showHospitalMarkers, setShowHospitalMarkers] = useState(true)
   const [mapZoom, setMapZoom] = useState(13)
-  const [selectedMarker, setSelectedMarker] = useState(null)
+  const [currentDateString, setCurrentDateString] = useState('')
   const [locationLoading, setLocationLoading] = useState(true)
   const [selectedHospital, setSelectedHospital] = useState(null)
+  const [hospitalDetailBackPage, setHospitalDetailBackPage] = useState('search')
+  const [appointmentContext, setAppointmentContext] = useState(null)
+  const [pendingDeleteAppointmentId, setPendingDeleteAppointmentId] = useState('')
+  const [isDeleteSubmitting, setIsDeleteSubmitting] = useState(false)
+  const [triageSymptoms, setTriageSymptoms] = useState('')
+  const [triageSeverity, setTriageSeverity] = useState(4)
+  const [triageDurationDays, setTriageDurationDays] = useState(1)
+  const [isEmergencyMode, setIsEmergencyMode] = useState(false)
+  const [fitPreferences, setFitPreferences] = useState({
+    serviceName: 'Consultation',
+    maxBudget: 2000,
+    hospitalType: 'any',
+    needsEmergency: false,
+    needsWheelchair: false,
+  })
   const watchLocationRef = useRef(null)
   const lastHospitalFetchRef = useRef(null)
+
+  const safeFavoriteHospitals = useMemo(
+    () => (Array.isArray(favoriteHospitals) ? favoriteHospitals.filter((favorite) => favorite && typeof favorite === 'object') : []),
+    [favoriteHospitals],
+  )
+
+  const favoriteIdByHospitalKey = useMemo(() => {
+    const pairs = safeFavoriteHospitals
+      .filter((favorite) => favorite.hospitalKey && favorite.id)
+      .map((favorite) => [favorite.hospitalKey, favorite.id])
+    return new Map(pairs)
+  }, [safeFavoriteHospitals])
+
+  const getFavoriteIdForHospitalKey = (hospitalKey) => {
+    if (favoriteIdByHospitalKey instanceof Map) {
+      return favoriteIdByHospitalKey.get(hospitalKey)
+    }
+
+    if (favoriteIdByHospitalKey && typeof favoriteIdByHospitalKey === 'object') {
+      return favoriteIdByHospitalKey[hospitalKey]
+    }
+
+    return undefined
+  }
+
+  const hasFavoriteForHospital = (hospital) => {
+    const hospitalKey = getHospitalFavoriteKey(hospital)
+    return Boolean(getFavoriteIdForHospitalKey(hospitalKey))
+  }
+
+  const getHospitalFavoriteKey = (hospital) =>
+    String(
+      hospital?.key ||
+        hospital?.id ||
+        hospital?.name ||
+        `${hospital?.address || 'unknown-address'}-${hospital?.distanceText || ''}`,
+    )
 
   const addHistoryItem = (item) => {
     setActivityHistory((prev) => [
@@ -211,30 +535,88 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     ].slice(0, 5))
   }
 
+  const getFallbackMemberId = (userId) => {
+    if (!userId) return 'HUB-UNASSIGNED'
+    const compact = String(userId).replace(/-/g, '').toUpperCase()
+    return `HUB-${compact.slice(-8)}`
+  }
+
+  const getRandomPassword = () => {
+    const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%'
+    const bytes = new Uint8Array(16)
+    window.crypto.getRandomValues(bytes)
+    return Array.from(bytes, (byte) => charset[byte % charset.length]).join('')
+  }
+
   useEffect(() => {
-    try {
-      const savedAppointments = window.localStorage.getItem('appointmentHistory')
-      if (savedAppointments) {
-        const parsedAppointments = JSON.parse(savedAppointments)
-        if (Array.isArray(parsedAppointments) && parsedAppointments.length > 0) {
-          setAppointmentHistory(parsedAppointments)
-          return
+    if (!currentUser?.id) return
+
+    let isMounted = true
+
+    const loadAppointments = async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/appointments?userId=${encodeURIComponent(currentUser.id)}`))
+        if (!res.ok) {
+          throw new Error(`Appointments request failed with status ${res.status}`)
+        }
+
+        const data = await res.json()
+        if (!isMounted) return
+
+        if (Array.isArray(data.appointments) && data.appointments.length > 0) {
+          setAppointmentHistory(data.appointments)
+        } else {
+          setAppointmentHistory(DEFAULT_APPOINTMENTS)
+        }
+      } catch (error) {
+        console.error('Failed to load appointment history from backend:', error)
+        if (isMounted) {
+          setAppointmentHistory(DEFAULT_APPOINTMENTS)
         }
       }
-
-      window.localStorage.setItem('appointmentHistory', JSON.stringify(DEFAULT_APPOINTMENTS))
-    } catch (error) {
-      console.error('Failed to load appointment history:', error)
     }
-  }, [])
+
+    loadAppointments()
+
+    return () => {
+      isMounted = false
+    }
+  }, [currentUser?.id])
 
   useEffect(() => {
-    try {
-      window.localStorage.setItem('appointmentHistory', JSON.stringify(appointmentHistory))
-    } catch (error) {
-      console.error('Failed to save appointment history:', error)
+    if (!currentUser?.id) return
+
+    let isMounted = true
+
+    const loadFavoriteHospitals = async () => {
+      try {
+        const res = await fetch(apiUrl(`/api/favorites?userId=${encodeURIComponent(currentUser.id)}`))
+        if (!res.ok) {
+          throw new Error(`Favorites request failed with status ${res.status}`)
+        }
+
+        const data = await res.json()
+        if (!isMounted) return
+
+        if (Array.isArray(data.favorites)) {
+          setFavoriteHospitals(data.favorites.filter((favorite) => favorite && typeof favorite === 'object'))
+        } else {
+          setFavoriteHospitals([])
+        }
+      } catch (error) {
+        console.error('Failed to load favorite hospitals from backend:', error)
+        if (isMounted) {
+          setFavoriteHospitals([])
+        }
+      }
     }
-  }, [appointmentHistory])
+
+    loadFavoriteHospitals()
+
+    return () => {
+      isMounted = false
+    }
+  }, [currentUser?.id])
 
   // Get user display info
   const metadata = currentUser?.user_metadata || {}
@@ -261,6 +643,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
           ...prev,
           ...parsedProfile,
           fullName: parsedProfile.fullName || fullName,
+          password: parsedProfile.password || '',
         }))
         return
       }
@@ -270,9 +653,16 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
         phone: '',
         city: '',
         bio: 'Keeping your healthcare details organized.',
+        password: '',
       }
       setProfileDraft(initialProfile)
-      window.localStorage.setItem(profileStorageKey, JSON.stringify(initialProfile))
+      window.localStorage.setItem(profileStorageKey, JSON.stringify({
+        fullName: initialProfile.fullName,
+        phone: initialProfile.phone,
+        city: initialProfile.city,
+        bio: initialProfile.bio,
+        password: initialProfile.password,
+      }))
     } catch (error) {
       console.error('Failed to load profile draft:', error)
     }
@@ -281,15 +671,37 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   useEffect(() => {
     if (!profileStorageKey || !profileDraft.fullName) return
     try {
-      window.localStorage.setItem(profileStorageKey, JSON.stringify(profileDraft))
+      window.localStorage.setItem(profileStorageKey, JSON.stringify({
+        fullName: profileDraft.fullName,
+        phone: profileDraft.phone,
+        city: profileDraft.city,
+        bio: profileDraft.bio,
+        password: profileDraft.password,
+      }))
     } catch (error) {
       console.error('Failed to save profile draft:', error)
     }
   }, [profileStorageKey, profileDraft])
 
-  // Get current date
-  const now = new Date()
-  const dateString = '📅 ' + now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'short', year: 'numeric' })
+  useEffect(() => {
+    const formatDate = () =>
+      new Date().toLocaleString('en-IN', {
+        weekday: 'long',
+        day: 'numeric',
+        month: 'short',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+      })
+
+    setCurrentDateString(formatDate())
+    const intervalId = window.setInterval(() => {
+      setCurrentDateString(formatDate())
+    }, 1000)
+
+    return () => window.clearInterval(intervalId)
+  }, [])
 
   // Load saved avatar and location
   useEffect(() => {
@@ -351,92 +763,80 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     }
   }, [])
 
-  const fetchNearbyMapHospitals = async (lat, lng) => {
-    const query = `
-      [out:json][timeout:60];
-      (
-        nwr["amenity"="hospital"](around:${HOSPITAL_MAX_DISTANCE_KM * 1000},${lat},${lng});
-      );
-      out center tags;
-    `
-    const endpoints = [
-      'https://overpass-api.de/api/interpreter',
-      'https://overpass.kumi.systems/api/interpreter',
-    ]
+  useEffect(() => {
+    if (!serviceSearchQuery.trim()) {
+      setServiceSearchResults([])
+      setServiceSearchLoading(false)
+      return
+    }
 
-    let lastError = null
-
-    for (const endpoint of endpoints) {
+    let isMounted = true
+    const timer = window.setTimeout(async () => {
+      setServiceSearchLoading(true)
       try {
-        const res = await fetch(`${endpoint}?data=${encodeURIComponent(query)}`)
+        const params = new URLSearchParams({ query: serviceSearchQuery.trim() })
+        if (userLocation?.lat && userLocation?.lng) {
+          params.set('lat', String(userLocation.lat))
+          params.set('lng', String(userLocation.lng))
+        }
+
+        const res = await fetch(apiUrl(`/api/services/search?${params.toString()}`))
         if (!res.ok) {
-          throw new Error(`Overpass request failed with status ${res.status}`)
+          throw new Error(`Service search request failed with status ${res.status}`)
         }
 
         const data = await res.json()
-        const rawHospitals = Array.isArray(data.elements) ? data.elements : []
-        const seenHospitals = new Set()
-        const normalizedHospitals = rawHospitals
-          .map((hospital) => {
-            const latValue = hospital.lat ?? hospital.center?.lat
-            const lonValue = hospital.lon ?? hospital.center?.lon
-
-            if (typeof latValue !== 'number' || typeof lonValue !== 'number') return null
-
-            const distanceKm = getDistanceKm({ lat, lng }, { lat: latValue, lng: lonValue })
-            if (distanceKm < HOSPITAL_MIN_DISTANCE_KM || distanceKm > HOSPITAL_MAX_DISTANCE_KM) return null
-
-            const key = `${hospital.type || 'node'}-${hospital.id || `${latValue}-${lonValue}`}`
-            if (seenHospitals.has(key)) return null
-            seenHospitals.add(key)
-
-            return {
-              ...hospital,
-              lat: latValue,
-              lon: lonValue,
-              distanceKm,
-              displayName: hospital.tags?.name || hospital.tags?.operator || 'Hospital',
-              displayAddress: formatHospitalAddress(hospital),
-            }
-          })
-          .filter(Boolean)
-          .sort((a, b) => a.distanceKm - b.distanceKm)
-
-        setNearbyMapHospitals(normalizedHospitals)
-        setShowHospitalMarkers(true)
-        addHistoryItem({
-          key: 'hospitals',
-          icon: '🏥',
-          title: 'Hospitals loaded',
-          note: `${normalizedHospitals.length} found within 200m-50km`,
-        })
-        return
-      } catch (e) {
-        lastError = e
+        if (isMounted) {
+          setServiceSearchResults(Array.isArray(data.results) ? data.results : [])
+        }
+      } catch (error) {
+        console.error('Service search failed:', error)
+        if (isMounted) setServiceSearchResults([])
+      } finally {
+        if (isMounted) setServiceSearchLoading(false)
       }
-    }
+    }, 250)
 
-    console.error('Failed to fetch hospitals from OSM:', lastError)
-    setNearbyMapHospitals([])
+    return () => {
+      isMounted = false
+      window.clearTimeout(timer)
+    }
+  }, [serviceSearchQuery, userLocation?.lat, userLocation?.lng])
+
+  const fetchNearbyMapHospitals = async (lat, lng) => {
+    try {
+      const params = new URLSearchParams({ lat: String(lat), lng: String(lng) })
+      const res = await fetch(apiUrl(`/api/hospitals/nearby?${params.toString()}`))
+      if (!res.ok) {
+        throw new Error(`Hospital request failed with status ${res.status}`)
+      }
+
+      const data = await res.json()
+      const normalizedHospitals = Array.isArray(data.hospitals) ? data.hospitals : []
+
+      setNearbyMapHospitals(normalizedHospitals)
+      setShowHospitalMarkers(true)
+      addHistoryItem({
+        key: 'hospitals',
+        icon: '🏥',
+        title: 'Hospitals loaded',
+        note: `${normalizedHospitals.length} found within 200m-50km`,
+      })
+    } catch (error) {
+      console.error('Failed to fetch hospitals from backend:', error)
+      setNearbyMapHospitals([])
+    }
   }
 
   const fetchNearbyPlaces = async (lat, lng) => {
     try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lng}&zoom=15&addressdetails=1`);
-      const data = await res.json();
-      const address = data.address || {};
-      const places = [];
-      
-      // Extract nearby places
-      if (address.village) places.push({ name: address.village, type: '🏘️' });
-      if (address.suburb) places.push({ name: address.suburb, type: '🏙️' });
-      if (address.neighbourhood) places.push({ name: address.neighbourhood, type: '📍' });
-      if (address.road) places.push({ name: address.road, type: '🛣️' });
-      if (address.city) places.push({ name: address.city, type: '🏛️' });
-      if (address.county) places.push({ name: address.county, type: '🗺️' });
-      if (address.state) places.push({ name: address.state, type: '📌' });
-      
-      setNearbyPlaces(places.slice(0, 5));
+      const res = await fetch(apiUrl(`/api/places/nearby?lat=${lat}&lng=${lng}`))
+      if (!res.ok) {
+        throw new Error(`Nearby places request failed with status ${res.status}`)
+      }
+
+      const data = await res.json()
+      setNearbyPlaces(Array.isArray(data.places) ? data.places.slice(0, 5) : [])
     } catch (e) {
       console.error('Failed to fetch nearby places:', e);
     }
@@ -456,18 +856,139 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
 
   const loadSavedAvatar = async () => {
     if (!currentUser || !supabaseClient) return
-    try {
-      const { data } = await supabaseClient
-        .from('profiles')
-        .select('avatar_url')
-        .eq('id', currentUser.id)
-        .single()
 
-      if (data && data.avatar_url) {
-        setAvatarUrl(data.avatar_url)
+    const resolveAvatarFromStorage = async (avatarPathHint = '') => {
+      try {
+        if (avatarPathHint) {
+          const { data: hintedUrlData } = supabaseClient.storage
+            .from('avatars')
+            .getPublicUrl(avatarPathHint)
+
+          if (hintedUrlData?.publicUrl) {
+            return hintedUrlData.publicUrl
+          }
+        }
+
+        const { data: files, error: listError } = await supabaseClient.storage
+          .from('avatars')
+          .list(currentUser.id, {
+            limit: 20,
+            sortBy: { column: 'updated_at', order: 'desc' },
+          })
+
+        if (listError || !Array.isArray(files) || files.length === 0) {
+          return ''
+        }
+
+        const preferredFile =
+          files.find((item) => String(item.name || '').toLowerCase().startsWith('avatar.')) || files[0]
+
+        if (!preferredFile?.name) {
+          return ''
+        }
+
+        const filePath = `${currentUser.id}/${preferredFile.name}`
+        const { data: listedUrlData } = supabaseClient.storage
+          .from('avatars')
+          .getPublicUrl(filePath)
+
+        return listedUrlData?.publicUrl || ''
+      } catch (storageError) {
+        console.error('Avatar storage fallback failed:', storageError)
+        return ''
       }
+    }
+
+    try {
+      const authAvatarUrl = currentUser?.user_metadata?.avatar_url || currentUser?.app_metadata?.avatar_url || ''
+      const authAvatarPath = currentUser?.user_metadata?.avatar_path || ''
+      const authPassword = currentUser?.user_metadata?.login_password || ''
+
+      if (authAvatarUrl) {
+        setAvatarUrl(authAvatarUrl)
+      }
+
+      const { data, error } = await supabaseClient
+        .from('profiles')
+        .select('avatar_url, member_id, login_password')
+        .eq('id', currentUser.id)
+        .maybeSingle()
+
+      if (error) {
+        throw error
+      }
+
+      let savedAvatarUrl = data?.avatar_url || authAvatarUrl
+      if (!savedAvatarUrl) {
+        savedAvatarUrl = await resolveAvatarFromStorage(authAvatarPath)
+      }
+
+      if (savedAvatarUrl) {
+        setAvatarUrl(savedAvatarUrl)
+      }
+
+      setProfileMemberId(data?.member_id || getFallbackMemberId(currentUser.id))
+
+      const provider = currentUser?.app_metadata?.provider || currentUser?.user_metadata?.provider
+      const storedPassword = String(data?.login_password || authPassword || profileDraft.password || '')
+
+      if (provider === 'google' && !storedPassword) {
+        const generatedPassword = getRandomPassword()
+        setProfilePassword(generatedPassword)
+        setProfileDraft((prev) => ({ ...prev, password: generatedPassword }))
+
+        try {
+          const { error: authUpdateError } = await supabaseClient.auth.updateUser({
+            password: generatedPassword,
+          })
+
+          if (authUpdateError) {
+            throw authUpdateError
+          }
+
+          const { error: profileUpdateError } = await supabaseClient
+            .from('profiles')
+            .upsert(
+              {
+                id: currentUser.id,
+                login_password: generatedPassword,
+                name: profileDraft.fullName || fullName,
+              },
+              { onConflict: 'id' },
+            )
+
+          await supabaseClient.auth.updateUser({
+            data: {
+              login_password: generatedPassword,
+            },
+          })
+
+          if (profileUpdateError) {
+            throw profileUpdateError
+          }
+        } catch (syncError) {
+          console.error('Failed to sync generated Google password:', syncError)
+        }
+
+        return
+      }
+
+      setProfilePassword(storedPassword)
+      setProfileDraft((prev) => ({ ...prev, password: storedPassword }))
     } catch (err) {
       console.error('Load avatar failed:', err.message)
+      setProfileMemberId(getFallbackMemberId(currentUser?.id))
+
+      const authAvatarPath = currentUser?.user_metadata?.avatar_path || ''
+      const fallbackAvatarUrl = await resolveAvatarFromStorage(authAvatarPath)
+      if (fallbackAvatarUrl) {
+        setAvatarUrl(fallbackAvatarUrl)
+      }
+
+      const localPassword = String(profileDraft.password || '')
+      if (localPassword) {
+        setProfilePassword(localPassword)
+      }
     }
   }
 
@@ -491,10 +1012,21 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
 
       const publicUrl = urlData.publicUrl + '?t=' + Date.now()
 
-      await supabaseClient
+      const { error: profileUpsertError } = await supabaseClient
         .from('profiles')
-        .update({ avatar_url: publicUrl })
-        .eq('id', currentUser.id)
+        .upsert({ id: currentUser.id, avatar_url: publicUrl }, { onConflict: 'id' })
+
+      if (profileUpsertError) {
+        console.error('Avatar profile upsert failed:', profileUpsertError.message)
+      }
+
+      const { error: metadataError } = await supabaseClient.auth.updateUser({
+        data: { avatar_url: publicUrl, avatar_path: filePath },
+      })
+
+      if (metadataError) {
+        console.error('Avatar metadata update failed:', metadataError.message)
+      }
 
       setAvatarUrl(publicUrl)
     } catch (err) {
@@ -509,16 +1041,58 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   const saveProfileDetails = async () => {
     try {
       if (currentUser && supabaseClient) {
+        const nextPassword = String(profileDraft.password || profilePassword || '').trim()
+
+        if (nextPassword && nextPassword !== profilePassword) {
+          const { error: authUpdateError } = await supabaseClient.auth.updateUser({
+            password: nextPassword,
+          })
+
+          if (authUpdateError) {
+            throw authUpdateError
+          }
+        }
+
+        const { error: profileUpsertError } = await supabaseClient
+          .from('profiles')
+          .upsert(
+            {
+              id: currentUser.id,
+              avatar_url: avatarUrl,
+              login_password: nextPassword || null,
+              name: profileDraft.fullName || fullName,
+            },
+            { onConflict: 'id' },
+          )
+
+        if (profileUpsertError) {
+          throw profileUpsertError
+        }
+
+        // Optional profile columns might not exist in every schema; ignore if unavailable.
         await supabaseClient
           .from('profiles')
           .update({
-            avatar_url: avatarUrl,
             full_name: profileDraft.fullName,
             phone: profileDraft.phone,
             city: profileDraft.city,
             bio: profileDraft.bio,
           })
           .eq('id', currentUser.id)
+
+        if (avatarUrl) {
+          await supabaseClient.auth.updateUser({
+            data: {
+              avatar_url: avatarUrl,
+              login_password: nextPassword || profilePassword || '',
+            },
+          })
+        }
+
+          if (nextPassword) {
+            setProfilePassword(nextPassword)
+            setProfileDraft((prev) => ({ ...prev, password: nextPassword }))
+          }
       }
 
       addHistoryItem({
@@ -542,40 +1116,51 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     setIsProfileEditing(true)
   }
 
+  const updateFitPreference = (key, value) => {
+    setFitPreferences((prev) => ({ ...prev, [key]: value }))
+  }
+
   const filterHospitals = () => {
-    const query = hospitalSearchQuery.toLowerCase()
-    const sourceHospitals = nearbyMapHospitals.length > 0 ? nearbyMapHospitals : MOCK_HOSPITALS
-    let filtered = sourceHospitals.map(normalizeHospitalForSearch)
+    try {
+      const query = String(hospitalSearchQuery || '').toLowerCase()
+      const sourceHospitals = nearbyMapHospitals.length > 0 ? nearbyMapHospitals : MOCK_HOSPITALS
+      let filtered = (Array.isArray(sourceHospitals) ? sourceHospitals : [])
+        .map(normalizeHospitalForSearch)
+        .filter(Boolean)
 
-    if (activeFilter !== 'All') {
-      const activeFilterLower = activeFilter.toLowerCase()
-      filtered = filtered.filter((hospital) =>
-        hospital.searchTokens.some((token) => token.includes(activeFilterLower)) ||
-        hospital.tags.some((tag) => String(tag).toLowerCase().includes(activeFilterLower))
-      )
+      if (activeFilter !== 'All') {
+        const activeFilterLower = String(activeFilter || '').toLowerCase()
+        filtered = filtered.filter((hospital) =>
+          (Array.isArray(hospital.searchTokens) && hospital.searchTokens.some((token) => token.includes(activeFilterLower))) ||
+          (Array.isArray(hospital.tags) && hospital.tags.some((tag) => String(tag).toLowerCase().includes(activeFilterLower)))
+        )
+      }
+
+      if (query) {
+        filtered = filtered.filter((hospital) =>
+          String(hospital.name || '').toLowerCase().includes(query) ||
+          String(hospital.address || '').toLowerCase().includes(query) ||
+          (Array.isArray(hospital.tags) && hospital.tags.some((tag) => String(tag).toLowerCase().includes(query))) ||
+          (Array.isArray(hospital.searchTokens) && hospital.searchTokens.some((token) => token.includes(query)))
+        )
+      }
+
+      if (activePage === 'search' || query || activeFilter !== 'All' || nearbyMapHospitals.length > 0) {
+        filtered = filtered.sort((a, b) => {
+          if (typeof a.distanceKm === 'number' && typeof b.distanceKm === 'number') {
+            return a.distanceKm - b.distanceKm
+          }
+          if (typeof a.distanceKm === 'number') return -1
+          if (typeof b.distanceKm === 'number') return 1
+          return 0
+        })
+      }
+
+      setFilteredHospitals(filtered)
+    } catch (error) {
+      console.error('Hospital filter failed:', error)
+      setFilteredHospitals((Array.isArray(MOCK_HOSPITALS) ? MOCK_HOSPITALS : []).map(normalizeHospitalForSearch))
     }
-
-    if (query) {
-      filtered = filtered.filter((hospital) =>
-        hospital.name.toLowerCase().includes(query) ||
-        hospital.address.toLowerCase().includes(query) ||
-        hospital.tags.some((tag) => String(tag).toLowerCase().includes(query)) ||
-        hospital.searchTokens.some((token) => token.includes(query))
-      )
-    }
-
-    if (activePage === 'search' || query || activeFilter !== 'All' || nearbyMapHospitals.length > 0) {
-      filtered = filtered.sort((a, b) => {
-        if (typeof a.distanceKm === 'number' && typeof b.distanceKm === 'number') {
-          return a.distanceKm - b.distanceKm
-        }
-        if (typeof a.distanceKm === 'number') return -1
-        if (typeof b.distanceKm === 'number') return 1
-        return 0
-      })
-    }
-
-    setFilteredHospitals(filtered)
   }
 
   const activeHospitalDetail = useMemo(() => {
@@ -583,24 +1168,347 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     return buildHospitalDetail(selectedHospital)
   }, [selectedHospital])
 
-  const openHospitalDetail = (hospital) => {
+  const openHospitalDetail = (hospital, sourcePage = activePage, nextAppointmentContext = null) => {
+    const safeBackPage = sourcePage && sourcePage !== 'hospital-detail' ? sourcePage : 'search'
+    setHospitalDetailBackPage(safeBackPage)
+    setAppointmentContext(nextAppointmentContext)
     setSelectedHospital(hospital)
     setActivePage('hospital-detail')
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
 
-  const handleBookAppointment = ({ detail, form }) => {
-    const appointment = createAppointmentRecord(detail, form)
-    setAppointmentHistory((prev) => [appointment, ...prev])
+  const buildHospitalFromServiceResult = (result, selectedServiceName = '') => {
+    const distanceLabel = toDistanceLabel(result?.distanceKm)
+    const services = Array.isArray(result?.matchedServices) ? result.matchedServices : []
+    const matchedServiceTag = selectedServiceName ? `Matched service: ${selectedServiceName}` : ''
+    const serviceTags = services.slice(0, 4).map((service) => String(service?.name || '').trim()).filter(Boolean)
+    const servicePriceDetails = services
+      .slice(0, 3)
+      .map((service) => {
+        const serviceName = String(service?.name || '').trim()
+        if (!serviceName) return null
+        const priceLabel = typeof service?.price === 'number' ? `INR ${service.price.toLocaleString('en-IN')}` : 'Price on request'
+        return `${serviceName}: ${priceLabel}`
+      })
+      .filter(Boolean)
+
+    return {
+      key: `service-${String(result?.hospital || 'hospital').toLowerCase().replace(/\s+/g, '-')}`,
+      name: result?.hospital || 'Hospital',
+      address: result?.address || 'Address unavailable',
+      distanceText: distanceLabel ? `${distanceLabel} away` : 'Nearby',
+      distanceKm: typeof result?.distanceKm === 'number' ? result.distanceKm : null,
+      rating: result?.rating || 'N/A',
+      source: 'Service Search',
+      tags: [matchedServiceTag, ...serviceTags].filter(Boolean),
+      details: servicePriceDetails,
+      contact: {
+        phone: '',
+        website: '',
+      },
+      raw: null,
+      searchTokens: [
+        String(result?.hospital || '').toLowerCase(),
+        String(result?.address || '').toLowerCase(),
+        String(selectedServiceName || '').toLowerCase(),
+      ].filter(Boolean),
+    }
+  }
+
+  const openServiceResultHospitalDetail = async (result, selectedServiceName = '', action = 'details') => {
+    const fallbackHospital = buildHospitalFromServiceResult(result, selectedServiceName || serviceSearchQuery.trim())
+    let hospitalForDetail = fallbackHospital
+
+    try {
+      const params = new URLSearchParams({ name: String(result?.hospital || '') })
+      if (userLocation?.lat && userLocation?.lng) {
+        params.set('lat', String(userLocation.lat))
+        params.set('lng', String(userLocation.lng))
+      }
+
+      const res = await fetch(apiUrl(`/api/hospitals/detail?${params.toString()}`))
+      if (res.ok) {
+        const data = await res.json()
+        if (data?.detail) {
+          hospitalForDetail = data.detail
+        }
+      }
+    } catch (error) {
+      console.error('Failed to load full hospital detail from service result:', error)
+    }
+
     addHistoryItem({
-      key: `appointment-${appointment.id}`,
-      icon: '📅',
-      title: 'Appointment booked',
-      note: `${detail.name} on ${appointment.date} at ${appointment.time}`,
+      key: `service-${action}-${fallbackHospital.key}-${Date.now()}`,
+      icon: action === 'book' ? '📅' : '📘',
+      title: action === 'book' ? 'Appointment flow opened' : 'Hospital details opened',
+      note: `${fallbackHospital.name}${selectedServiceName ? ` • ${selectedServiceName}` : ''}`,
     })
-    setSelectedHospital(null)
-    setActivePage('history')
-    window.scrollTo({ top: 0, behavior: 'smooth' })
+
+    const nextAppointmentContext =
+      action === 'book'
+        ? {
+            mode: 'service-quick',
+            intent: 'book',
+            serviceName: selectedServiceName || serviceSearchQuery.trim(),
+            email: currentEmail || '',
+          }
+        : null
+
+    openHospitalDetail(hospitalForDetail, 'find-service', nextAppointmentContext)
+  }
+
+  const handleBookAppointment = async ({ detail, form }) => {
+    try {
+      const appointmentPreview = createAppointmentRecord(detail, form)
+      const res = await fetch(apiUrl('/api/appointments'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          detail,
+          form,
+        }),
+      })
+
+      if (!res.ok) {
+        throw new Error(`Appointment save failed with status ${res.status}`)
+      }
+
+      const data = await res.json()
+      const appointment = data.appointment || appointmentPreview
+      setAppointmentHistory((prev) => [appointment, ...prev])
+      addHistoryItem({
+        key: `appointment-${appointment.id}`,
+        icon: '📅',
+        title: 'Appointment booked',
+        note: `${detail.name} on ${appointment.date} at ${appointment.time}`,
+      })
+      setSelectedHospital(null)
+      setActivePage('history')
+      window.scrollTo({ top: 0, behavior: 'smooth' })
+    } catch (error) {
+      console.error('Appointment save failed:', error)
+      const fallbackAppointment = createAppointmentRecord(detail, form)
+      setAppointmentHistory((prev) => [fallbackAppointment, ...prev])
+      setSelectedHospital(null)
+      setActivePage('history')
+    }
+  }
+
+  const handleDeleteAppointment = (appointmentId) => {
+    setPendingDeleteAppointmentId(appointmentId)
+  }
+
+  const resolveHospitalCoordinates = (hospital) => {
+    const directLat = Number.parseFloat(hospital?.raw?.lat ?? hospital?.lat)
+    const directLon = Number.parseFloat(hospital?.raw?.lon ?? hospital?.lon)
+    if (Number.isFinite(directLat) && Number.isFinite(directLon)) {
+      return { lat: directLat, lon: directLon }
+    }
+
+    const matched = nearbyMapHospitals.find((candidate) => {
+      if (!candidate) return false
+
+      const candidateName = String(candidate.displayName || candidate.tags?.name || '').toLowerCase()
+      const hospitalName = String(hospital?.name || hospital?.displayName || '').toLowerCase()
+      if (candidateName && hospitalName && candidateName === hospitalName) {
+        return true
+      }
+
+      const candidateStreet = String(candidate.tags?.['addr:street'] || '').toLowerCase()
+      const hospitalAddress = String(hospital?.address || hospital?.displayAddress || '').toLowerCase()
+      return candidateStreet && hospitalAddress && hospitalAddress.includes(candidateStreet)
+    })
+
+    if (!matched) return null
+
+    const matchedLat = Number.parseFloat(matched.lat)
+    const matchedLon = Number.parseFloat(matched.lon)
+    if (Number.isFinite(matchedLat) && Number.isFinite(matchedLon)) {
+      return { lat: matchedLat, lon: matchedLon }
+    }
+
+    return null
+  }
+
+  const handleShowDirections = (hospital) => {
+    const coords = resolveHospitalCoordinates(hospital)
+    if (!coords) {
+      alert('Directions unavailable for this hospital right now.')
+      return
+    }
+
+    const destinationLabel = hospital?.name || hospital?.displayName || 'Hospital'
+    const origin =
+      userLocation?.lat && userLocation?.lng
+        ? `${userLocation.lat},${userLocation.lng}`
+        : null
+
+    const queryParams = new URLSearchParams({
+      api: '1',
+      destination: `${coords.lat},${coords.lon}`,
+      travelmode: 'driving',
+    })
+
+    if (origin) {
+      queryParams.set('origin', origin)
+    }
+
+    const googleMapsUrl = `https://www.google.com/maps/dir/?${queryParams.toString()}`
+    window.open(googleMapsUrl, '_blank', 'noopener,noreferrer')
+
+    addHistoryItem({
+      key: `google-directions-${hospital?.key || hospital?.id || Date.now()}`,
+      icon: '🧭',
+      title: 'Opened Google Maps directions',
+      note: destinationLabel,
+    })
+  }
+
+  const handleToggleFavoriteHospital = async (hospital) => {
+    if (!currentUser?.id) return
+
+    const hospitalKey = getHospitalFavoriteKey(hospital)
+    const existingFavoriteId = getFavoriteIdForHospitalKey(hospitalKey)
+
+    setFavoriteHospitalKeysPending((prev) => [...new Set([...prev, hospitalKey])])
+
+    try {
+      if (existingFavoriteId) {
+        const res = await fetch(
+          apiUrl(
+            `/api/favorites/${encodeURIComponent(existingFavoriteId)}?userId=${encodeURIComponent(currentUser.id)}`,
+          ),
+          { method: 'DELETE' },
+        )
+
+        if (!res.ok && res.status !== 404) {
+          throw new Error(`Favorite remove failed with status ${res.status}`)
+        }
+
+        setFavoriteHospitals((prev) => prev.filter((favorite) => favorite.id !== existingFavoriteId))
+        addHistoryItem({
+          key: `favorite-remove-${hospitalKey}`,
+          icon: '💔',
+          title: 'Removed from saved hospitals',
+          note: hospital.name || 'Hospital removed from favorites',
+        })
+        return
+      }
+
+      const res = await fetch(apiUrl('/api/favorites'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userId: currentUser.id,
+          hospital,
+        }),
+      })
+
+      if (!res.ok) {
+        throw new Error(`Favorite save failed with status ${res.status}`)
+      }
+
+      const data = await res.json()
+      if (data.favorite) {
+        setFavoriteHospitals((prev) => {
+          const filtered = prev.filter((item) => item.id !== data.favorite.id)
+          return [data.favorite, ...filtered]
+        })
+      }
+
+      addHistoryItem({
+        key: `favorite-add-${hospitalKey}`,
+        icon: '❤️',
+        title: 'Saved hospital',
+        note: hospital.name || 'Hospital saved to favorites',
+      })
+    } catch (error) {
+      console.error('Favorite toggle failed:', error)
+      alert('Failed to update saved hospitals. Please try again.')
+    } finally {
+      setFavoriteHospitalKeysPending((prev) => prev.filter((key) => key !== hospitalKey))
+    }
+  }
+
+  const openFavoriteHospitalDetail = (favorite) => {
+    if (!favorite?.hospital) return
+    openHospitalDetail(favorite.hospital)
+  }
+
+  const handleRemoveFavoriteHospital = async (favorite) => {
+    if (!currentUser?.id || !favorite?.id) return
+
+    const hospital = favorite.hospital || {}
+    const hospitalKey = favorite.hospitalKey || getHospitalFavoriteKey(hospital)
+
+    setFavoriteHospitalKeysPending((prev) => [...new Set([...prev, hospitalKey])])
+
+    try {
+      const res = await fetch(
+        apiUrl(`/api/favorites/${encodeURIComponent(favorite.id)}?userId=${encodeURIComponent(currentUser.id)}`),
+        { method: 'DELETE' },
+      )
+
+      if (!res.ok && res.status !== 404) {
+        throw new Error(`Favorite remove failed with status ${res.status}`)
+      }
+
+      setFavoriteHospitals((prev) => prev.filter((item) => item.id !== favorite.id))
+      addHistoryItem({
+        key: `favorite-remove-${hospitalKey}`,
+        icon: '💔',
+        title: 'Removed from saved hospitals',
+        note: hospital?.name || 'Hospital removed from favorites',
+      })
+    } catch (error) {
+      console.error('Favorite remove failed:', error)
+      alert('Failed to remove saved hospital. Please try again.')
+    } finally {
+      setFavoriteHospitalKeysPending((prev) => prev.filter((key) => key !== hospitalKey))
+    }
+  }
+
+  const handleCancelDeleteAppointment = () => {
+    if (isDeleteSubmitting) return
+    setPendingDeleteAppointmentId('')
+  }
+
+  const handleConfirmDeleteAppointment = async () => {
+    const appointmentId = pendingDeleteAppointmentId
+    if (!appointmentId) return
+    setIsDeleteSubmitting(true)
+
+    try {
+      if (currentUser?.id && appointmentId) {
+        const res = await fetch(
+          apiUrl(
+            `/api/appointments/${encodeURIComponent(appointmentId)}?userId=${encodeURIComponent(currentUser.id)}`,
+          ),
+          {
+            method: 'DELETE',
+          },
+        )
+
+        if (!res.ok && res.status !== 404) {
+          throw new Error(`Appointment delete failed with status ${res.status}`)
+        }
+      }
+
+      setAppointmentHistory((prev) => prev.filter((appointment) => appointment.id !== appointmentId))
+      addHistoryItem({
+        key: `appointment-delete-${appointmentId}`,
+        icon: '🗑️',
+        title: 'Appointment deleted',
+        note: 'Removed from your appointment history.',
+      })
+      setPendingDeleteAppointmentId('')
+    } catch (error) {
+      console.error('Appointment delete failed:', error)
+      alert('Failed to delete appointment. Please try again.')
+    } finally {
+      setIsDeleteSubmitting(false)
+    }
   }
 
   const handleHospitalSearch = () => {
@@ -633,7 +1541,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     setChatIsSending(true)
 
     try {
-      const res = await fetch('http://localhost:5001/api/chat', {
+      const res = await fetch(apiUrl('/api/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message })
@@ -685,13 +1593,59 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     ]
   }, [userLocation, nearbyMapHospitals])
 
+  const visibleHospitals = useMemo(
+    () => (Array.isArray(filteredHospitals) ? filteredHospitals.filter(Boolean) : []),
+    [filteredHospitals],
+  )
+
+  const smartAssistHospitals = useMemo(() => {
+    const sourceHospitals =
+      visibleHospitals.length > 0
+        ? visibleHospitals
+        : (Array.isArray(nearbyMapHospitals) && nearbyMapHospitals.length > 0 ? nearbyMapHospitals : MOCK_HOSPITALS)
+
+    return (Array.isArray(sourceHospitals) ? sourceHospitals : [])
+      .map((hospital, index) => normalizeHospitalForSearch(hospital, index))
+      .filter(Boolean)
+  }, [visibleHospitals, nearbyMapHospitals])
+
+  const triageAssessment = useMemo(
+    () => buildTriageAssessment({ symptomsText: triageSymptoms, severityLevel: triageSeverity, durationDays: triageDurationDays }),
+    [triageSymptoms, triageSeverity, triageDurationDays],
+  )
+
+  const emergencyHospitals = useMemo(() => {
+    return smartAssistHospitals
+      .map((hospital) => {
+        const metaBlob = getHospitalMetaBlob(hospital)
+        const emergencySignals = includesAny(metaBlob, ['emergency', '24/7', 'icu'])
+        const distanceBonus = typeof hospital.distanceKm === 'number' ? Math.max(0, 15 - hospital.distanceKm) : 2
+        return {
+          hospital,
+          priorityScore: (emergencySignals ? 70 : 35) + distanceBonus,
+        }
+      })
+      .sort((a, b) => b.priorityScore - a.priorityScore)
+      .slice(0, 5)
+  }, [smartAssistHospitals])
+
+  const fitMatches = useMemo(() => {
+    return smartAssistHospitals
+      .map((hospital) => {
+        const fit = scoreHospitalFit(hospital, fitPreferences)
+        return { hospital, ...fit }
+      })
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 6)
+  }, [smartAssistHospitals, fitPreferences])
+
   return (
     <div className="dashboard-layout">
       {/* SIDEBAR */}
       <div className="sidebar">
         <div className="sidebar-logo">
           <div className="logo-icon">⚕️</div>
-          <div className="logo-text">Health<span>Pulse</span></div>
+          <div className="logo-text">HealthCare <span>Hub</span></div>
         </div>
 
         <div className="sidebar-header" onClick={() => setActivePage('profile')} style={{ cursor: 'pointer' }}>
@@ -734,6 +1688,18 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
             <span>🔍</span> Hospital Search
           </button>
           <button
+            className={`nav-item ${activePage === 'smart-assist' ? 'active' : ''}`}
+            onClick={() => setActivePage('smart-assist')}
+          >
+            <span>🧠</span> Smart Assist
+          </button>
+          <button
+            className={`nav-item ${activePage === 'find-service' ? 'active' : ''}`}
+            onClick={() => setActivePage('find-service')}
+          >
+            <span>🧾</span> Find Service
+          </button>
+          <button
             className={`nav-item ${activePage === 'history' ? 'active' : ''}`}
             onClick={() => setActivePage('history')}
           >
@@ -761,15 +1727,36 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
           <div className="dash-page active-page">
             <div className="dash-header">
               <h1>Welcome back, <span className="wave">👋</span> {firstName}</h1>
-              <div className="date-badge">{dateString}</div>
+              <div className="date-badge">
+                <span className="date-badge-icon" aria-hidden="true">📅</span>
+                <span>{currentDateString}</span>
+              </div>
             </div>
 
             {/* Hero Banner */}
             <div className="hero-banner-dark">
-              <span className="hero-tag">⭐ Pro Tip</span>
-              <h2>Your health journey starts here</h2>
-              <p style={{ color: '#7a8ba7', marginBottom: '24px' }}>Discover nearby hospitals, get instant AI health insights, and manage your wellness all in one place.</p>
-              <button className="hero-cta" onClick={() => setActivePage('search')}>Start Exploring</button>
+              <span className="hero-tag"><span style={{ color: '#ff5d5d', marginRight: '6px' }}>🔴</span>🚨 Safety First</span>
+              <h2>Emergency mode is now one tap away</h2>
+              <p style={{ color: '#7a8ba7', marginBottom: '24px' }}>
+                Instant emergency support with nearby hospital shortlist, ambulance quick call, and fastest directions.
+              </p>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  className="hero-cta"
+                  style={{
+                    background: 'linear-gradient(135deg, #ff4d4f, #d9363e)',
+                    color: '#ffffff',
+                    boxShadow: '0 12px 30px rgba(217,54,62,0.35)',
+                  }}
+                  onClick={() => {
+                    setIsEmergencyMode(true)
+                    setActivePage('emergency-mode')
+                  }}
+                >
+                  Enable Emergency Mode
+                </button>
+                <button className="h-dir-btn" onClick={() => setActivePage('search')}>Start Exploring</button>
+              </div>
             </div>
 
             {/* Stats */}
@@ -941,6 +1928,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
 
         {/* HOSPITAL SEARCH PAGE */}
         {activePage === 'search' && (
+          <SectionErrorBoundary>
           <div className="dash-page active-page">
             <button className="back-btn-dark" onClick={() => setActivePage('dashboard')}>← Back</button>
 
@@ -978,7 +1966,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
               ))}
             </div>
 
-            <h3 className="section-title-dark" style={{ marginBottom: '8px' }}>{filteredHospitals.length} Live Hospitals Found</h3>
+            <h3 className="section-title-dark" style={{ marginBottom: '8px' }}>{visibleHospitals.length} Live Hospitals Found</h3>
             <div style={{ marginBottom: '16px', color: '#7a8ba7', fontSize: '0.9rem' }}>
               Sorted by nearest distance from your live location
             </div>
@@ -986,9 +1974,20 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
               perspective: 'none',
               transform: 'none',
             }}>
-              {filteredHospitals.map((hospital, idx) => (
+              {visibleHospitals.map((hospital, idx) => {
+                const tags = Array.isArray(hospital.tags) ? hospital.tags : []
+                const details = Array.isArray(hospital.details) ? hospital.details : []
+                const contact = hospital.contact || {}
+                const distanceLabel = toDistanceLabel(hospital.distanceKm)
+                const safeName = String(hospital.name || 'Hospital')
+                const safeAddress = String(hospital.address || 'Address unavailable')
+                const safeSource = String(hospital.source || 'Unknown')
+                const safeDistanceText = String(hospital.distanceText || 'Distance not available')
+                const safeRating = String(hospital.rating || 'Live')
+
+                return (
                 <div
-                  key={hospital.key || idx}
+                  key={hospital.key || hospital.id || idx}
                   className="hospital-card-dark hospital-card-clickable"
                   onClick={() => openHospitalDetail(hospital)}
                   role="button"
@@ -1002,54 +2001,210 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                 >
                   <div className="h-top">
                     <div className="h-icon-box">{hospital.source === 'OpenStreetMap' ? '📍' : '🏥'}</div>
-                    <div className="h-rating">{hospital.rating || 'Live'}</div>
+                    <div className="h-rating">{safeRating}</div>
                   </div>
-                  <h3>{hospital.name}</h3>
-                  <p className="h-address">{hospital.address}</p>
+                  <h3>{safeName}</h3>
+                  <p className="h-address">{safeAddress}</p>
                   <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '12px' }}>
-                    <span className="h-tag">{hospital.source}</span>
-                    {hospital.distanceText && <span className="h-tag">{hospital.distanceText}</span>}
-                    {hospital.distanceKm !== null && hospital.distanceKm !== undefined && (
-                      <span className="h-tag">{hospital.distanceKm.toFixed(2)} km</span>
+                    <span className="h-tag">{safeSource}</span>
+                    {hospital.distanceText && <span className="h-tag">{safeDistanceText}</span>}
+                    {distanceLabel && (
+                      <span className="h-tag">{distanceLabel}</span>
                     )}
                   </div>
-                  {hospital.tags.length > 0 && (
+                  {tags.length > 0 && (
                     <div className="h-tags">
-                      {hospital.tags.slice(0, 6).map((tag, tagIdx) => (
-                        <span key={tagIdx} className="h-tag">{tag}</span>
+                      {tags.slice(0, 6).map((tag, tagIdx) => (
+                        <span key={tagIdx} className="h-tag">{String(tag)}</span>
                       ))}
                     </div>
                   )}
-                  {hospital.details.length > 0 && (
+                  {details.length > 0 && (
                     <div style={{ marginTop: '14px', display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '8px', fontSize: '0.8rem', color: '#a0b5c7' }}>
-                      {hospital.details.map((detail, detailIdx) => (
+                      {details.map((detail, detailIdx) => (
                         <div key={detailIdx} style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(0,212,170,0.15)', borderRadius: '10px', padding: '8px 10px' }}>
-                          {detail}
+                          {String(detail)}
                         </div>
                       ))}
                     </div>
                   )}
-                  {(hospital.contact.phone || hospital.contact.website) && (
+                  {(contact.phone || contact.website) && (
                     <div style={{ marginTop: '12px', fontSize: '0.8rem', color: '#a0b5c7', lineHeight: 1.6 }}>
-                      {hospital.contact.phone && <div>Phone: {hospital.contact.phone}</div>}
-                      {hospital.contact.website && <div>Website: {hospital.contact.website}</div>}
+                      {contact.phone && <div>Phone: {contact.phone}</div>}
+                      {contact.website && <div>Website: {contact.website}</div>}
                     </div>
                   )}
                   <div className="h-bottom">
-                    <span className="h-distance">📍 {hospital.distanceText || 'Distance not available'}</span>
-                    <button
-                      className="h-dir-btn"
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        openHospitalDetail(hospital)
-                      }}
-                    >
-                      View Full Details
-                    </button>
+                    <span className="h-distance">📍 {safeDistanceText}</span>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                      <button
+                        className="h-dir-btn"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handleShowDirections(hospital)
+                        }}
+                      >
+                        Directions
+                      </button>
+                      <button
+                        className="h-dir-btn"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          openHospitalDetail(hospital)
+                        }}
+                      >
+                        View Full Details
+                      </button>
+                      <button
+                        className="h-dir-btn"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          handleToggleFavoriteHospital(hospital)
+                        }}
+                        disabled={favoriteHospitalKeysPending.includes(getHospitalFavoriteKey(hospital))}
+                        style={{
+                          borderColor: hasFavoriteForHospital(hospital)
+                            ? 'rgba(255, 110, 168, 0.45)'
+                            : undefined,
+                          color: hasFavoriteForHospital(hospital)
+                            ? '#ff8fbc'
+                            : undefined,
+                        }}
+                      >
+                        {favoriteHospitalKeysPending.includes(getHospitalFavoriteKey(hospital))
+                          ? 'Saving...'
+                          : hasFavoriteForHospital(hospital)
+                            ? 'Unsave'
+                            : 'Save'}
+                      </button>
+                    </div>
                   </div>
                 </div>
-              ))}
+              )})}
             </div>
+          </div>
+          </SectionErrorBoundary>
+        )}
+
+        {/* FIND SERVICE PAGE */}
+        {activePage === 'find-service' && (
+          <div className="dash-page active-page">
+            <button className="back-btn-dark" onClick={() => setActivePage('dashboard')}>← Back</button>
+
+            <div className="search-banner-dark">
+              <h2>Find Service</h2>
+              <div className="location-pill">Search any service with live prices</div>
+              <div style={{ marginTop: '10px', color: '#a0b5c7', fontSize: '0.9rem' }}>
+                Service ka naam dalo, matching hospitals aur per-service pricing mil jayegi.
+              </div>
+            </div>
+
+            <div className="hospital-card-dark" style={{ marginBottom: '20px' }}>
+              <h3 style={{ color: '#e8ecf4', marginBottom: '10px' }}>Service Price Finder</h3>
+              <p style={{ color: '#7a8ba7', marginBottom: '14px', fontSize: '0.9rem' }}>
+                Example: MRI, ICU Bed, ECG, Cardiology Consultation
+              </p>
+              <input
+                type="text"
+                className="dark-input"
+                placeholder="Type a service name..."
+                value={serviceSearchQuery}
+                onChange={(e) => setServiceSearchQuery(e.target.value)}
+              />
+
+              <div style={{ marginTop: '14px' }}>
+                <div style={{ color: '#7a8ba7', fontSize: '0.85rem', marginBottom: '8px' }}>Suggestions:</div>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                  {suggestedServices.map((service) => (
+                    <button
+                      key={service}
+                      type="button"
+                      className={`chip ${serviceSearchQuery.trim().toLowerCase() === service.toLowerCase() ? 'active' : ''}`}
+                      onClick={() => setServiceSearchQuery(service)}
+                    >
+                      {service}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {serviceSearchQuery.trim().length > 0 && (
+              <>
+                <h3 className="section-title-dark" style={{ marginBottom: '10px' }}>
+                  {serviceSearchResults.length} Hospitals Offering "{serviceSearchQuery}"
+                </h3>
+
+                {serviceSearchLoading ? (
+                  <div className="hospital-card-dark" style={{ color: '#a0b5c7' }}>
+                    Searching backend for matching hospitals...
+                  </div>
+                ) : serviceSearchResults.length === 0 ? (
+                  <div className="hospital-card-dark" style={{ color: '#ffb4b4', borderColor: 'rgba(255,77,77,0.35)' }}>
+                    Is service ke liye koi hospital match nahi hua.
+                  </div>
+                ) : (
+                  <div className="hospital-grid-dark" style={{ perspective: 'none', transform: 'none' }}>
+                    {serviceSearchResults.map((result) => (
+                      <div key={result.hospital} className="hospital-card-dark">
+                        <div className="h-top">
+                          <div className="h-icon-box">🧾</div>
+                          <div className="h-rating">⭐ {result.rating}</div>
+                        </div>
+                        <h3>{result.hospital}</h3>
+                        <p className="h-address">{result.address}</p>
+
+                        <div style={{ marginTop: '14px', display: 'grid', gap: '8px' }}>
+                          {result.matchedServices.map((service) => (
+                            <div
+                              key={`${result.hospital}-${service.name}`}
+                              style={{
+                                display: 'flex',
+                                justifyContent: 'space-between',
+                                alignItems: 'center',
+                                border: '1px solid rgba(255,255,255,0.08)',
+                                borderRadius: '10px',
+                                padding: '10px 12px',
+                                background: 'rgba(7,21,31,0.45)',
+                                gap: '10px',
+                              }}
+                            >
+                              <div style={{ display: 'grid', gap: '2px' }}>
+                                <span style={{ color: '#c8d5e3', fontSize: '0.9rem' }}>{service.name}</span>
+                                <span style={{ color: '#7a8ba7', fontSize: '0.72rem' }}>{service.availability || 'Estimated'}</span>
+                              </div>
+                              <span style={{ color: '#00d4aa', fontWeight: '700', whiteSpace: 'nowrap' }}>
+                                {typeof service.price === 'number' ? `₹${service.price.toLocaleString('en-IN')}` : 'Price on request'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div className="h-bottom" style={{ marginTop: '16px' }}>
+                          <span className="h-distance">Use actions from this card</span>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                            <button
+                              type="button"
+                              className="h-dir-btn"
+                              onClick={() => openServiceResultHospitalDetail(result, result.matchedServices?.[0]?.name || '', 'details')}
+                            >
+                              View Details
+                            </button>
+                            <button
+                              type="button"
+                              className="h-dir-btn"
+                              onClick={() => openServiceResultHospitalDetail(result, result.matchedServices?.[0]?.name || '', 'book')}
+                            >
+                              Book Appointment
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         )}
 
@@ -1057,15 +2212,16 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
         {activePage === 'hospital-detail' && selectedHospital && activeHospitalDetail && (
           <HospitalDetailPage
             hospital={selectedHospital}
-            userName={profileDraft.fullName || fullName}
-            userPhone={profileDraft.phone}
+            appointmentContext={appointmentContext}
             onBack={() => {
               setSelectedHospital(null)
-              setActivePage('search')
+              setAppointmentContext(null)
+              setActivePage(hospitalDetailBackPage || 'search')
             }}
             onBookAppointment={handleBookAppointment}
             onViewHistory={() => {
               setSelectedHospital(null)
+              setAppointmentContext(null)
               setActivePage('history')
             }}
           />
@@ -1103,6 +2259,12 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                   </div>
                   <div style={{ color: '#7a8ba7', fontSize: '0.82rem', lineHeight: 1.6 }}>
                     Your details stay private and are saved locally on this device.
+                  </div>
+                  <div style={{ color: '#9de9d8', fontSize: '0.82rem', lineHeight: 1.6 }}>
+                    Unique ID: {profileMemberId || getFallbackMemberId(currentUser?.id)}
+                  </div>
+                  <div style={{ color: '#9de9d8', fontSize: '0.82rem', lineHeight: 1.6 }}>
+                    Password: {profileDraft.password ? 'Saved in profile' : 'Not set yet'}
                   </div>
                 </div>
               </div>
@@ -1160,6 +2322,18 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                       style={{ opacity: 0.85 }}
                     />
                   </label>
+
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: '8px', color: '#e8ecf4' }}>
+                    <span style={{ fontSize: '0.85rem', color: '#7a8ba7' }}>Password</span>
+                    <input
+                      type="text"
+                      className="dark-input"
+                      value={profileDraft.password}
+                      onChange={(e) => handleProfileFieldChange('password', e.target.value)}
+                      placeholder="Generate or edit your login password"
+                      disabled={!isProfileEditing}
+                    />
+                  </label>
                 </div>
 
                 <label style={{ display: 'flex', flexDirection: 'column', gap: '8px', color: '#e8ecf4', marginTop: '16px' }}>
@@ -1189,6 +2363,71 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                     <div style={{ color: '#e8ecf4', fontWeight: '700' }}>{profileDraft.phone || 'Not added'}</div>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: '24px' }}>
+              <h3 style={{ color: '#e8ecf4', marginBottom: '10px' }}>Saved Hospitals</h3>
+              <p style={{ color: '#7a8ba7', marginBottom: '18px' }}>
+                Hospital Search page se save kiye hue hospitals yahan quick access ke liye milenge.
+              </p>
+
+              <div className="hospital-grid-dark" style={{ perspective: 'none', transform: 'none' }}>
+                {safeFavoriteHospitals.length === 0 ? (
+                  <div className="hospital-card-dark" style={{ gridColumn: '1 / -1' }}>
+                    <div className="h-top">
+                      <div className="h-icon-box">❤️</div>
+                      <div className="h-rating">Empty</div>
+                    </div>
+                    <h3>No saved hospitals yet</h3>
+                    <p className="h-address">Hospital Search page se Save button dabao to hospitals yahan appear honge.</p>
+                  </div>
+                ) : (
+                  safeFavoriteHospitals.map((favorite) => {
+                    const hospital = favorite.hospital || {}
+                    const hospitalKey = favorite.hospitalKey || getHospitalFavoriteKey(hospital)
+                    return (
+                      <div
+                        key={favorite.id}
+                        className="hospital-card-dark hospital-card-clickable"
+                        onClick={() => openFavoriteHospitalDetail(favorite)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            openFavoriteHospitalDetail(favorite)
+                          }
+                        }}
+                      >
+                        <div className="h-top">
+                          <div className="h-icon-box">🏥</div>
+                          <div className="h-rating">{hospital.rating || 'Saved'}</div>
+                        </div>
+                        <h3>{hospital.name || 'Hospital'}</h3>
+                        <p className="h-address">{hospital.address || 'Address not available'}</p>
+                        <div className="h-tags">
+                          {hospital.source && <span className="h-tag">{hospital.source}</span>}
+                          {hospital.distanceText && <span className="h-tag">{hospital.distanceText}</span>}
+                          <span className="h-tag">Saved</span>
+                        </div>
+                        <div className="h-bottom">
+                          <span className="h-distance">📍 Quick access</span>
+                          <button
+                            className="h-dir-btn"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              handleRemoveFavoriteHospital(favorite)
+                            }}
+                            disabled={favoriteHospitalKeysPending.includes(hospitalKey)}
+                          >
+                            {favoriteHospitalKeysPending.includes(hospitalKey) ? 'Removing...' : 'Remove'}
+                          </button>
+                        </div>
+                      </div>
+                    )
+                  })
+                )}
               </div>
             </div>
           </div>
@@ -1237,10 +2476,252 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                     </div>
                     <div className="h-bottom">
                       <span className="h-distance">📍 Appointment record</span>
-                      <button className="h-dir-btn">View Details →</button>
+                      <button className="h-dir-btn" onClick={() => handleDeleteAppointment(item.id)}>
+                        Delete Appointment
+                      </button>
                     </div>
                   </div>
                 ))
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* SMART ASSIST PAGE */}
+        {activePage === 'smart-assist' && (
+          <div className="dash-page active-page">
+            <button className="back-btn-dark" onClick={() => setActivePage('dashboard')}>← Back</button>
+            <h2 style={{ color: '#e8ecf4', marginBottom: '10px' }}>Smart Assist</h2>
+            <p style={{ color: '#7a8ba7', marginBottom: '24px' }}>
+              AI-powered triage guidance, emergency-first shortlist, and best-fit hospital matcher for faster decisions.
+            </p>
+
+            <div style={{ marginBottom: '18px' }}>
+              <div className="hospital-card-dark">
+                <div className="h-top">
+                  <div className="h-icon-box">🩺</div>
+                  <div className="h-rating">Triage</div>
+                </div>
+                <h3 style={{ marginBottom: '8px' }}>Symptom Triage Score</h3>
+                <textarea
+                  className="dark-input"
+                  rows={4}
+                  placeholder="Example: chest pain with dizziness for 2 days"
+                  value={triageSymptoms}
+                  onChange={(event) => setTriageSymptoms(event.target.value)}
+                  style={{ width: '100%', resize: 'vertical', marginBottom: '12px' }}
+                />
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px', marginBottom: '12px' }}>
+                  <label style={{ color: '#a0b5c7', fontSize: '0.85rem' }}>
+                    Severity (1-10)
+                    <input
+                      className="dark-input"
+                      type="number"
+                      min={1}
+                      max={10}
+                      value={triageSeverity}
+                      onChange={(event) => setTriageSeverity(Math.max(1, Math.min(10, Number(event.target.value) || 1)))}
+                    />
+                  </label>
+                  <label style={{ color: '#a0b5c7', fontSize: '0.85rem' }}>
+                    Duration (days)
+                    <input
+                      className="dark-input"
+                      type="number"
+                      min={0}
+                      max={30}
+                      value={triageDurationDays}
+                      onChange={(event) => setTriageDurationDays(Math.max(0, Math.min(30, Number(event.target.value) || 0)))}
+                    />
+                  </label>
+                </div>
+                <div style={{ border: `1px solid ${triageAssessment.color}66`, background: `${triageAssessment.color}14`, borderRadius: '12px', padding: '12px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                    <strong style={{ color: triageAssessment.color }}>Urgency: {triageAssessment.urgency}</strong>
+                    <span style={{ color: '#e8ecf4' }}>Score: {triageAssessment.score}/100</span>
+                  </div>
+                  <p style={{ color: '#d2dbea', marginBottom: '8px' }}>{triageAssessment.recommendation}</p>
+                  <ul style={{ margin: 0, paddingLeft: '18px', color: '#9ab0c7' }}>
+                    {triageAssessment.reasons.slice(0, 3).map((reason, idx) => (
+                      <li key={idx}>{reason}</li>
+                    ))}
+                  </ul>
+                </div>
+              </div>
+
+            </div>
+
+            <div className="hospital-card-dark" style={{ marginBottom: '18px' }}>
+              <div className="h-top">
+                <div className="h-icon-box">⚙️</div>
+                <div className="h-rating">Fit Match</div>
+              </div>
+              <h3 style={{ marginBottom: '10px' }}>Personalized Hospital Match</h3>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '10px' }}>
+                <label style={{ color: '#a0b5c7', fontSize: '0.85rem' }}>
+                  Service
+                  <input
+                    className="dark-input"
+                    value={fitPreferences.serviceName}
+                    onChange={(event) => updateFitPreference('serviceName', event.target.value)}
+                    placeholder="Consultation"
+                  />
+                </label>
+                <label style={{ color: '#a0b5c7', fontSize: '0.85rem' }}>
+                  Max Budget (INR)
+                  <input
+                    className="dark-input"
+                    type="number"
+                    min={300}
+                    max={50000}
+                    value={fitPreferences.maxBudget}
+                    onChange={(event) => updateFitPreference('maxBudget', Math.max(300, Number(event.target.value) || 300))}
+                  />
+                </label>
+                <label style={{ color: '#a0b5c7', fontSize: '0.85rem' }}>
+                  Hospital Type
+                  <select
+                    className="dark-input"
+                    value={fitPreferences.hospitalType}
+                    onChange={(event) => updateFitPreference('hospitalType', event.target.value)}
+                  >
+                    <option value="any">Any</option>
+                    <option value="speciality">Speciality</option>
+                    <option value="emergency">Emergency</option>
+                    <option value="cardiology">Cardiology</option>
+                    <option value="neurology">Neurology</option>
+                  </select>
+                </label>
+              </div>
+              <div style={{ display: 'flex', gap: '16px', marginTop: '12px' }}>
+                <label style={{ color: '#9ab0c7', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={fitPreferences.needsEmergency}
+                    onChange={(event) => updateFitPreference('needsEmergency', event.target.checked)}
+                  />
+                  Need emergency support
+                </label>
+                <label style={{ color: '#9ab0c7', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={fitPreferences.needsWheelchair}
+                    onChange={(event) => updateFitPreference('needsWheelchair', event.target.checked)}
+                  />
+                  Need wheelchair access
+                </label>
+              </div>
+            </div>
+
+            <div className="hospital-grid-dark" style={{ perspective: 'none', transform: 'none' }}>
+              {fitMatches.map((entry, idx) => {
+                const hospital = entry.hospital
+                const matchScore = typeof entry.score === 'number' ? entry.score : Math.round(entry.priorityScore || 0)
+                const reasons = Array.isArray(entry.reasons) ? entry.reasons : ['Prioritized for emergency readiness and distance.']
+                const costLabel = entry.estimatedCost ? `INR ${entry.estimatedCost}` : 'N/A'
+
+                return (
+                  <div key={`${hospital.key}-${idx}`} className="hospital-card-dark">
+                    <div className="h-top">
+                      <div className="h-icon-box">🏥</div>
+                      <div className="h-rating">Match {matchScore}%</div>
+                    </div>
+                    <h3>{hospital.name}</h3>
+                    <p className="h-address">{hospital.address}</p>
+                    <div className="h-tags">
+                      <span className="h-tag">{hospital.distanceText || 'Distance pending'}</span>
+                      <span className="h-tag">Rating {hospital.rating || 'N/A'}</span>
+                      <span className="h-tag">Est. {costLabel}</span>
+                    </div>
+                    <div style={{ color: '#8fa3bb', fontSize: '0.86rem', marginTop: '8px', marginBottom: '12px' }}>
+                      {reasons.slice(0, 2).join(' ')}
+                    </div>
+                    <div className="h-bottom">
+                      <span className="h-distance">🎯 Fit shortlist</span>
+                      <button className="h-dir-btn" onClick={() => handleShowDirections(hospital)}>Directions</button>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* EMERGENCY MODE PAGE */}
+        {activePage === 'emergency-mode' && (
+          <div className="dash-page active-page">
+            <button
+              className="back-btn-dark"
+              onClick={() => {
+                setIsEmergencyMode(false)
+                setActivePage('dashboard')
+              }}
+            >
+              ← Exit Emergency Mode
+            </button>
+            <h2 style={{ color: '#ffb3b3', marginBottom: '10px' }}>Emergency Mode</h2>
+            <p style={{ color: '#9fb1c6', marginBottom: '24px' }}>
+              Nearby priority hospitals sorted for emergency response. Call and route actions are ready.
+            </p>
+
+            <div className="hospital-card-dark" style={{ marginBottom: '18px', borderColor: 'rgba(255,107,107,0.45)' }}>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                <button
+                  className="h-dir-btn"
+                  style={{ background: 'rgba(255,107,107,0.85)' }}
+                  onClick={() => window.open('tel:108', '_self')}
+                >
+                  Call Ambulance (108)
+                </button>
+                {emergencyHospitals[0]?.hospital && (
+                  <button className="h-dir-btn" onClick={() => handleShowDirections(emergencyHospitals[0].hospital)}>
+                    Route To Nearest Priority Hospital
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="hospital-grid-dark" style={{ perspective: 'none', transform: 'none' }}>
+              {emergencyHospitals.length === 0 ? (
+                <div className="hospital-card-dark" style={{ gridColumn: '1 / -1' }}>
+                  <div className="h-top">
+                    <div className="h-icon-box">🚨</div>
+                    <div className="h-rating">No Data</div>
+                  </div>
+                  <h3>Nearby emergency hospitals unavailable</h3>
+                  <p className="h-address">Please enable location to get nearby emergency hospitals.</p>
+                </div>
+              ) : (
+                emergencyHospitals.map((entry, idx) => {
+                  const hospital = entry.hospital
+                  const emergencyScore = Math.round(entry.priorityScore || 0)
+                  return (
+                    <div key={`${hospital.key || hospital.name}-${idx}`} className="hospital-card-dark">
+                      <div className="h-top">
+                        <div className="h-icon-box">🏥</div>
+                        <div className="h-rating">Priority {emergencyScore}</div>
+                      </div>
+                      <h3>{hospital.name}</h3>
+                      <p className="h-address">{hospital.address}</p>
+                      <div className="h-tags">
+                        <span className="h-tag">{hospital.distanceText || 'Distance pending'}</span>
+                        <span className="h-tag">Rating {hospital.rating || 'N/A'}</span>
+                        <span className="h-tag">Emergency Ready</span>
+                      </div>
+                      <div className="h-bottom">
+                        <span className="h-distance">🚨 Emergency shortlist</span>
+                        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                          <button className="h-dir-btn" onClick={() => openHospitalDetail(hospital, 'emergency-mode')}>
+                            View Details
+                          </button>
+                          <button className="h-dir-btn" onClick={() => handleShowDirections(hospital)}>
+                            Directions
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )
+                })
               )}
             </div>
           </div>
@@ -1301,6 +2782,26 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                 </div>
               </div>
             )}
+          </div>
+        )}
+
+        {pendingDeleteAppointmentId && (
+          <div className="delete-confirm-overlay" onClick={handleCancelDeleteAppointment}>
+            <div className="delete-confirm-dialog" onClick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby="delete-confirm-title">
+              <div className="delete-confirm-tab">Confirm Delete</div>
+              <h3 id="delete-confirm-title">Delete this appointment?</h3>
+              <p>
+                This will remove the appointment from your history and cannot be undone.
+              </p>
+              <div className="delete-confirm-actions">
+                <button type="button" className="delete-cancel-btn" onClick={handleCancelDeleteAppointment} disabled={isDeleteSubmitting}>
+                  Cancel
+                </button>
+                <button type="button" className="delete-confirm-btn" onClick={handleConfirmDeleteAppointment} disabled={isDeleteSubmitting}>
+                  {isDeleteSubmitting ? 'Deleting...' : 'Yes, Delete'}
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>

@@ -1,20 +1,46 @@
-import React, { useEffect, useMemo, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { APPOINTMENT_TIME_SLOTS, buildHospitalDetail, getDefaultAppointmentForm } from '../utils/hospitalDetails'
 
 function HospitalDetailPage({
   hospital,
-  userName,
-  userPhone,
+  appointmentContext,
   onBack,
   onBookAppointment,
   onViewHistory,
 }) {
-  const detail = useMemo(() => buildHospitalDetail(hospital), [hospital])
-  const [form, setForm] = useState(() => getDefaultAppointmentForm(detail, userName, userPhone))
+  const detail = useMemo(() => {
+    const hasPrebuiltDetail =
+      hospital &&
+      Array.isArray(hospital.doctors) &&
+      Array.isArray(hospital.services) &&
+      Array.isArray(hospital.facilities)
+
+    return hasPrebuiltDetail ? hospital : buildHospitalDetail(hospital)
+  }, [hospital])
+  const [form, setForm] = useState(() => getDefaultAppointmentForm(detail))
+  const bookingPanelRef = useRef(null)
+
+  const isQuickServiceBooking = appointmentContext?.mode === 'service-quick'
+  const prefilledService = String(appointmentContext?.serviceName || '').trim()
+  const prefilledEmail = String(appointmentContext?.email || '').trim()
 
   useEffect(() => {
-    setForm(getDefaultAppointmentForm(detail, userName, userPhone))
-  }, [detail.id, userName, userPhone])
+    const base = getDefaultAppointmentForm(detail)
+    const nextService = prefilledService || base.service || base.specialty
+
+    setForm({
+      ...base,
+      email: prefilledEmail || base.email || '',
+      service: nextService,
+      specialty: nextService || base.specialty,
+      notes: isQuickServiceBooking ? `Service request: ${nextService}` : base.notes,
+    })
+  }, [detail.id, prefilledEmail, prefilledService, isQuickServiceBooking])
+
+  useEffect(() => {
+    if (appointmentContext?.intent !== 'book' || !bookingPanelRef.current) return
+    bookingPanelRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }, [appointmentContext?.intent, detail.id])
 
   const updateField = (field, value) => {
     setForm((prev) => ({ ...prev, [field]: value }))
@@ -22,9 +48,16 @@ function HospitalDetailPage({
 
   const handleSubmit = (event) => {
     event.preventDefault()
+
+    const normalizedService = String(form.service || form.specialty || '').trim()
+
     onBookAppointment({
       detail,
-      form,
+      form: {
+        ...form,
+        specialty: normalizedService || form.specialty,
+        notes: form.notes || (normalizedService ? `Service request: ${normalizedService}` : ''),
+      },
     })
   }
 
@@ -146,7 +179,7 @@ function HospitalDetailPage({
             </div>
           </section>
 
-          <section className="hospital-card-dark detail-panel detail-booking-panel">
+          <section ref={bookingPanelRef} className="hospital-card-dark detail-panel detail-booking-panel">
             <div className="h-top">
               <div className="h-icon-box">📅</div>
               <div className="h-rating">Book</div>
@@ -178,6 +211,17 @@ function HospitalDetailPage({
               </label>
 
               <label className="detail-field">
+                <span>Email</span>
+                <input
+                  className="detail-input"
+                  type="email"
+                  value={form.email || ''}
+                  onChange={(event) => updateField('email', event.target.value)}
+                  placeholder="your-email@example.com"
+                />
+              </label>
+
+              <label className="detail-field">
                 <span>Doctor</span>
                 <select
                   className="detail-input"
@@ -192,20 +236,32 @@ function HospitalDetailPage({
                 </select>
               </label>
 
-              <label className="detail-field">
-                <span>Specialty</span>
-                <select
-                  className="detail-input"
-                  value={form.specialty}
-                  onChange={(event) => updateField('specialty', event.target.value)}
-                >
-                  {detail.specialties.map((specialty) => (
-                    <option key={specialty} value={specialty}>
-                      {specialty}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              {isQuickServiceBooking ? (
+                <label className="detail-field">
+                  <span>Service</span>
+                  <input
+                    className="detail-input"
+                    value={form.service || form.specialty || ''}
+                    onChange={(event) => updateField('service', event.target.value)}
+                    readOnly
+                  />
+                </label>
+              ) : (
+                <label className="detail-field">
+                  <span>Specialty</span>
+                  <select
+                    className="detail-input"
+                    value={form.specialty}
+                    onChange={(event) => updateField('specialty', event.target.value)}
+                  >
+                    {detail.specialties.map((specialty) => (
+                      <option key={specialty} value={specialty}>
+                        {specialty}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
 
               <label className="detail-field">
                 <span>Date</span>
@@ -232,24 +288,28 @@ function HospitalDetailPage({
                 </select>
               </label>
 
-              <label className="detail-field detail-field-full">
-                <span>Notes</span>
-                <textarea
-                  className="detail-input"
-                  rows={4}
-                  value={form.notes}
-                  onChange={(event) => updateField('notes', event.target.value)}
-                  placeholder="Tell the hospital what you need help with"
-                />
-              </label>
+              {!isQuickServiceBooking && (
+                <label className="detail-field detail-field-full">
+                  <span>Notes</span>
+                  <textarea
+                    className="detail-input"
+                    rows={4}
+                    value={form.notes}
+                    onChange={(event) => updateField('notes', event.target.value)}
+                    placeholder="Tell the hospital what you need help with"
+                  />
+                </label>
+              )}
 
               <div className="detail-form-actions">
                 <button type="submit" className="search-btn-dark detail-submit-btn">
                   Book Appointment
                 </button>
-                <button type="button" className="h-dir-btn" onClick={onViewHistory}>
-                  Open History
-                </button>
+                {!isQuickServiceBooking && (
+                  <button type="button" className="h-dir-btn" onClick={onViewHistory}>
+                    Open History
+                  </button>
+                )}
               </div>
             </form>
           </section>

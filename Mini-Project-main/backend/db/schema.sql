@@ -5,7 +5,9 @@ CREATE TABLE public.profiles (
   id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
   name TEXT,
   avatar_url TEXT,
-  username TEXT UNIQUE
+  username TEXT UNIQUE,
+  member_id TEXT UNIQUE,
+  login_password TEXT
 );
 
 -- Documents Table
@@ -19,10 +21,38 @@ CREATE TABLE public.documents (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Appointments Table
+CREATE TABLE public.appointments (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  date TEXT NOT NULL,
+  time TEXT NOT NULL,
+  hospital TEXT NOT NULL,
+  patient_name TEXT,
+  phone TEXT,
+  doctor TEXT,
+  specialty TEXT,
+  status TEXT DEFAULT 'Upcoming',
+  notes TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Hospital Favorites Table
+CREATE TABLE public.hospital_favorites (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  hospital_key TEXT NOT NULL,
+  hospital_data JSONB NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  CONSTRAINT hospital_favorites_user_hospital_unique UNIQUE (user_id, hospital_key)
+);
+
 -- 2. ROW LEVEL SECURITY (RLS)
 
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.documents ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.appointments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.hospital_favorites ENABLE ROW LEVEL SECURITY;
 
 -- Profiles Policies
 CREATE POLICY "Users can view their own profile" ON public.profiles
@@ -38,16 +68,33 @@ CREATE POLICY "Users can insert their own documents" ON public.documents
 CREATE POLICY "Users can delete their own documents" ON public.documents
   FOR DELETE USING (auth.uid() = user_id);
 
+-- Appointments Policies
+CREATE POLICY "Users can view their own appointments" ON public.appointments
+  FOR SELECT USING (auth.uid()::text = user_id);
+CREATE POLICY "Users can insert their own appointments" ON public.appointments
+  FOR INSERT WITH CHECK (auth.uid()::text = user_id);
+CREATE POLICY "Users can delete their own appointments" ON public.appointments
+  FOR DELETE USING (auth.uid()::text = user_id);
+
+-- Hospital Favorites Policies
+CREATE POLICY "Users can view their own hospital favorites" ON public.hospital_favorites
+  FOR SELECT USING (auth.uid()::text = user_id);
+CREATE POLICY "Users can insert their own hospital favorites" ON public.hospital_favorites
+  FOR INSERT WITH CHECK (auth.uid()::text = user_id);
+CREATE POLICY "Users can delete their own hospital favorites" ON public.hospital_favorites
+  FOR DELETE USING (auth.uid()::text = user_id);
+
 -- 3. AUTOMATED PROFILE CREATION TRIGGER
 
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
 BEGIN
-  INSERT INTO public.profiles (id, name, username)
+  INSERT INTO public.profiles (id, name, username, member_id)
   VALUES (
     new.id, 
     new.raw_user_meta_data->>'full_name', 
-    lower(split_part(new.email, '@', 1)) -- Default username from email
+    lower(split_part(new.email, '@', 1)) || '_' || right(replace(new.id::text, '-', ''), 6),
+    'HUB-' || upper(right(replace(new.id::text, '-', ''), 8))
   );
   RETURN new;
 END;
@@ -68,4 +115,3 @@ CREATE TRIGGER on_auth_user_created
 --   FOR SELECT USING (bucket_id = 'avatars');
 -- CREATE POLICY "Users can update their own avatar" ON storage.objects
 --   FOR UPDATE USING (bucket_id = 'avatars' AND auth.uid()::text = (storage.foldername(name))[1]);
-

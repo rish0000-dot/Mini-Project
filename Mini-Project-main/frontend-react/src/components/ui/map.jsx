@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker as LeafletMarker, Popup, ZoomControl, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker as LeafletMarker, Popup, ZoomControl, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 
@@ -66,6 +66,7 @@ const userIcon = L.divIcon({
 function MapView({ center, zoom, bounds }) {
   const map = useMap();
   const previousCenterRef = useRef(null);
+  const interactionLockUntilRef = useRef(0);
 
   const toRadians = (value) => (value * Math.PI) / 180;
   const getDistanceMeters = (from, to) => {
@@ -82,12 +83,31 @@ function MapView({ center, zoom, bounds }) {
   };
 
   useEffect(() => {
+    const markInteraction = () => {
+      interactionLockUntilRef.current = Date.now() + 4500;
+    };
+
+    map.on('zoomstart', markInteraction);
+    map.on('movestart', markInteraction);
+    map.on('dragstart', markInteraction);
+
+    return () => {
+      map.off('zoomstart', markInteraction);
+      map.off('movestart', markInteraction);
+      map.off('dragstart', markInteraction);
+    };
+  }, [map]);
+
+  useEffect(() => {
+    if (Date.now() < interactionLockUntilRef.current) {
+      return;
+    }
+
     if (bounds && bounds.length === 2) {
-      map.stop();
       map.fitBounds(bounds, {
         animate: true,
-        duration: 1.15,
-        easeLinearity: 0.25,
+        duration: 0.95,
+        easeLinearity: 0.2,
         padding: [48, 48],
       });
       return;
@@ -101,11 +121,10 @@ function MapView({ center, zoom, bounds }) {
       return;
     }
 
-    map.stop();
     map.flyTo(center, zoom, {
       animate: true,
-      duration: 1.15,
-      easeLinearity: 0.25,
+      duration: 0.95,
+      easeLinearity: 0.2,
     });
   }, [bounds, center, zoom, map]);
 
@@ -121,10 +140,10 @@ export function Map({ children, center = [28.9124, 77.5855], zoom = 13, bounds =
       zoomAnimation={true}
       fadeAnimation={true}
       markerZoomAnimation={true}
-      zoomSnap={0.25}
-      zoomDelta={0.25}
+      zoomSnap={0.1}
+      zoomDelta={0.2}
       wheelDebounceTime={20}
-      wheelPxPerZoomLevel={120}
+      wheelPxPerZoomLevel={80}
       doubleClickZoom={true}
       touchZoom={true}
       style={{ height: '100%', width: '100%' }}
@@ -156,3 +175,4 @@ export function Marker({ position, title, icon = userIcon, children, ...props })
 
 export { hospitalIcon, userIcon };
 export { Popup } from 'react-leaflet';
+export { Polyline };

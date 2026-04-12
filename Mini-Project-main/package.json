@@ -3,6 +3,13 @@
   "version": "1.0.0",
   "description": "**This project is a refined version of an initially unstructured AI-generated system, transformed into a clean, secure, and fully functional healthcare mini application.**",
   "main": "index.js",
+  "scripts": {
+    "predev": "kill-port 5001 5173 5174 5175",
+    "dev": "concurrently \"npm --prefix backend run dev\" \"npm --prefix frontend-react run dev\"",
+    "dev:backend": "npm --prefix backend run dev",
+    "dev:frontend": "npm --prefix frontend-react run dev",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
   "dependencies": {
     "acorn": "^8.16.0",
     "acorn-jsx": "^5.3.2",
@@ -237,10 +244,6 @@
     "yocto-queue": "^0.1.0",
     "zustand": "^5.0.11"
   },
-  "scripts": {
-    "dev": "concurrently \"npm run dev --prefix frontend-react\" \"npm run dev --prefix backend\"",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/rish0000-dot/Mini-Project.git"
@@ -251,5 +254,8 @@
   "bugs": {
     "url": "https://github.com/rish0000-dot/Mini-Project/issues"
   },
-  "homepage": "https://github.com/rish0000-dot/Mini-Project#readme"
+  "homepage": "https://github.com/rish0000-dot/Mini-Project#readme",
+  "devDependencies": {
+    "kill-port": "^2.0.1"
+  }
 }

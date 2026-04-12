@@ -345,25 +345,28 @@ export const createAppointmentRecord = (detail, form) => ({
   hospital: detail.name,
   patientName: form.patientName || '',
   phone: form.phone || '',
+  email: form.email || '',
   doctor: form.doctor,
-  specialty: form.specialty,
+  specialty: form.service || form.specialty,
   status: 'Upcoming',
   notes: form.notes || `Booked through ${detail.name}.`,
 })
 
-export const getDefaultAppointmentForm = (detail, userName = '', userPhone = '') => {
+export const getDefaultAppointmentForm = (detail) => {
   const preferredDoctor = detail?.doctors?.[0]?.name || ''
   const preferredSpecialty = detail?.doctors?.[0]?.specialty || detail?.specialties?.[0] || 'General Medicine'
   const nextDate = new Date()
   nextDate.setDate(nextDate.getDate() + 2)
 
   return {
-    patientName: userName || '',
-    phone: userPhone || '',
+    patientName: '',
+    phone: '',
+    email: '',
     date: nextDate.toISOString().slice(0, 10),
     time: detail?.schedule?.[1] || APPOINTMENT_TIME_SLOTS[1],
     doctor: preferredDoctor,
     specialty: preferredSpecialty,
+    service: preferredSpecialty,
     notes: '',
   }
 }

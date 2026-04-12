@@ -5,7 +5,9 @@ CREATE TABLE public.profiles (
   id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
   name TEXT,
   avatar_url TEXT,
-  username TEXT UNIQUE
+  username TEXT UNIQUE,
+  member_id TEXT UNIQUE,
+  login_password TEXT
 );
 
 -- Documents Table
@@ -43,11 +45,12 @@ CREATE POLICY "Users can delete their own documents" ON public.documents
 CREATE OR REPLACE FUNCTION public.handle_new_user()
 RETURNS trigger AS $$
 BEGIN
-  INSERT INTO public.profiles (id, name, username)
+  INSERT INTO public.profiles (id, name, username, member_id)
   VALUES (
     new.id, 
     new.raw_user_meta_data->>'full_name', 
-    lower(split_part(new.email, '@', 1)) -- Default username from email
+    lower(split_part(new.email, '@', 1)) || '_' || right(replace(new.id::text, '-', ''), 6),
+    'HUB-' || upper(right(replace(new.id::text, '-', ''), 8))
   );
   RETURN new;
 END;
