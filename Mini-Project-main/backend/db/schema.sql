@@ -15,8 +15,13 @@ CREATE TABLE public.documents (
   id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
   user_id UUID REFERENCES auth.users ON DELETE CASCADE NOT NULL,
   file_url TEXT NOT NULL,
+  file_path TEXT,
   title TEXT NOT NULL,
+  note TEXT,
   text_content TEXT,
+  history JSONB DEFAULT '[]'::jsonb,
+  group_id TEXT,
+  file_size BIGINT,
   upload_date DATE DEFAULT CURRENT_DATE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

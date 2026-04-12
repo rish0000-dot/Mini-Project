@@ -1,6 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo, Component } from 'react'
+import JSZip from 'jszip'
+import { saveAs } from 'file-saver'
 import { Map, MapControls, Marker, Popup, hospitalIcon } from '../components/ui/map'
 import HospitalDetailPage from './HospitalDetailPage'
+import { 
+  Trash2, 
+  FileText,
+  File, 
+  Image as ImageIcon, 
+  Plus, 
+  Calendar, 
+  Edit2, 
+  FileCode,
+  Download
+} from 'lucide-react'
 import 'leaflet/dist/leaflet.css'
 
 class MapErrorBoundary extends Component {
@@ -462,6 +475,13 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   const [profilePassword, setProfilePassword] = useState('')
   const [serviceSearchResults, setServiceSearchResults] = useState([])
   const [serviceSearchLoading, setServiceSearchLoading] = useState(false)
+  const [modalState, setModalState] = useState({
+    isOpen: false,
+    title: '',
+    message: '',
+    type: 'alert', // 'alert' or 'confirm'
+    onConfirm: null,
+  })
   const chatContainerRef = useRef(null)
   const fileInputRef = useRef(null)
   const [userLocation, setUserLocation] = useState(null)
@@ -490,6 +510,16 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   })
   const watchLocationRef = useRef(null)
   const lastHospitalFetchRef = useRef(null)
+
+  // Document Vault State
+  const [documents, setDocuments] = useState([])
+  const [selectedDocumentDate, setSelectedDocumentDate] = useState(null)
+  const [pendingUploads, setPendingUploads] = useState([])
+  const [isUploading, setIsUploading] = useState(false)
+  const [editingDocId, setEditingDocId] = useState(null)
+  const [editTitle, setEditTitle] = useState('')
+  const [editNote, setEditNote] = useState('')
+  const [reUploadingDocId, setReUploadingDocId] = useState(null)
 
   const safeFavoriteHospitals = useMemo(
     () => (Array.isArray(favoriteHospitals) ? favoriteHospitals.filter((favorite) => favorite && typeof favorite === 'object') : []),
@@ -533,6 +563,25 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
       { ...item, id: `${item.key}-${Date.now()}` },
       ...prev.filter((entry) => entry.key !== item.key),
     ].slice(0, 5))
+  }
+
+  const showAlert = (title, message) => {
+    setModalState({ isOpen: true, title, message, type: 'alert', onConfirm: null })
+  }
+
+  const showConfirm = (title, message, onConfirm) => {
+    setModalState({ isOpen: true, title, message, type: 'confirm', onConfirm })
+  }
+
+  const closeModal = () => {
+    setModalState(prev => ({ ...prev, isOpen: false }))
+  }
+
+  const handleModalConfirm = () => {
+    if (modalState.onConfirm) {
+      modalState.onConfirm()
+    }
+    closeModal()
   }
 
   const getFallbackMemberId = (userId) => {
@@ -581,6 +630,53 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     return () => {
       isMounted = false
     }
+  }, [currentUser?.id])
+
+  useEffect(() => {
+    if (!currentUser?.id) return
+
+    const fetchDocuments = async () => {
+      try {
+        const { data, error } = await supabaseClient
+          .from('documents')
+          .select('*')
+          .eq('user_id', currentUser.id)
+          .order('created_at', { ascending: false })
+
+        if (error) throw error
+
+        const formattedDocs = (data || []).map((doc) => ({
+          id: doc.id,
+          title: doc.title,
+          note: doc.note,
+          uploadedAt: doc.created_at,
+          fileName: doc.title, 
+          fileSize: doc.file_size || 0,
+          fileType: doc.file_url.split('.').pop(),
+          status: 'Synced',
+          url: doc.file_url,
+          filePath: doc.file_path,
+          history: Array.isArray(doc.history) ? doc.history : [],
+          groupId: doc.group_id,
+        }))
+
+        setDocuments(formattedDocs)
+
+        if (formattedDocs.length > 0) {
+          const firstDocDate = new Date(formattedDocs[0].uploadedAt).toLocaleDateString('en-GB', {
+            day: 'numeric',
+            month: 'long',
+            year: 'numeric',
+          })
+          setSelectedDocumentDate(firstDocDate)
+        }
+      } catch (error) {
+        console.error('Failed to load documents from Supabase:', error)
+        setDocuments([])
+      }
+    }
+
+    fetchDocuments()
   }, [currentUser?.id])
 
   useEffect(() => {
@@ -1639,6 +1735,398 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
       .slice(0, 6)
   }, [smartAssistHospitals, fitPreferences])
 
+  const getFileIcon = (fileType = '') => {
+    const type = String(fileType).toLowerCase()
+    if (type.includes('pdf')) return <FileText size={20} />
+    if (type.includes('image') || type.includes('png') || type.includes('jpg') || type.includes('jpeg')) return <ImageIcon size={20} />
+    if (type.includes('word') || type.includes('doc') || type.includes('text')) return <File size={20} />
+    return <File size={20} />
+  }
+
+  const handleDocumentUpload = (event) => {
+    const files = Array.from(event.target.files || [])
+    if (!files.length) return
+
+    const newPending = files.map(file => ({
+      file,
+      title: file.name,
+      note: '',
+      id: Math.random().toString(36).slice(2, 9)
+    }))
+
+    setPendingUploads(prev => [...prev, ...newPending])
+    event.target.value = ''
+  }
+
+  const handleProcessUploads = async () => {
+    if (!currentUser?.id || !pendingUploads.length) return
+
+    setIsUploading(true)
+    try {
+      const uploadedDocs = []
+      const sessionId = `session-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      
+      for (const item of pendingUploads) {
+        const { file, title, note } = item
+        const fileExt = file.name.split('.').pop()
+        const fileName = `${currentUser.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${fileExt}`
+        const filePath = `${fileName}`
+
+        const { error: uploadError } = await supabaseClient.storage
+          .from('documentUpload')
+          .upload(filePath, file)
+
+        if (uploadError) throw uploadError
+
+        const { data: { publicUrl } } = supabaseClient.storage
+          .from('documentUpload')
+          .getPublicUrl(filePath)
+
+        const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+        
+        const initialHistory = [{ 
+          event: 'created', 
+          time: currentTime, 
+          filename: file.name 
+        }]
+
+        const { data: dbData, error: dbError } = await supabaseClient
+          .from('documents')
+          .insert([
+            {
+              user_id: currentUser.id,
+              file_url: publicUrl,
+              file_path: filePath,
+              title: title || file.name,
+              note: note || '',
+              history: initialHistory,
+              group_id: sessionId,
+              file_size: file.size,
+            },
+          ])
+          .select()
+
+        if (dbError) throw dbError
+
+        if (dbData && dbData[0]) {
+          const newDoc = dbData[0]
+          uploadedDocs.push({
+            id: newDoc.id,
+            title: newDoc.title,
+            note: newDoc.note,
+            uploadedAt: newDoc.created_at,
+            fileName: file.name,
+            fileSize: file.size,
+            fileType: file.type || 'application/octet-stream',
+            status: 'Uploaded',
+            url: newDoc.file_url,
+            filePath: newDoc.file_path,
+            history: newDoc.history,
+            groupId: newDoc.group_id,
+          })
+        }
+      }
+
+      setDocuments((prev) => [...uploadedDocs, ...prev].sort((a, b) => new Date(b.uploadedAt) - new Date(a.uploadedAt)))
+      setPendingUploads([])
+      
+      const newDateKey = new Date().toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+      setSelectedDocumentDate(newDateKey)
+      showAlert('Success', 'Documents uploaded successfully!')
+    } catch (error) {
+      console.error('Failed to upload documents:', error)
+      showAlert('Upload Error', `Unable to upload documents: ${error.message || 'Unknown error'}`)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const handleEditDocument = (doc) => {
+    setEditingDocId(doc.id)
+    setEditTitle(doc.title)
+    setEditNote(doc.note)
+  }
+
+  const handleCancelEditDocument = () => {
+    setEditingDocId(null)
+    setEditTitle('')
+    setEditNote('')
+  }
+
+  const handleSaveDocument = async () => {
+    if (!editingDocId) return
+    
+    const docToUpdate = documents.find(d => d.id === editingDocId)
+    if (!docToUpdate) return
+
+    try {
+      const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      const newHistory = [...(docToUpdate.history || []), { 
+        event: 'updated', 
+        time: currentTime, 
+        filename: editTitle || docToUpdate.title 
+      }]
+
+      const { error } = await supabaseClient
+        .from('documents')
+        .update({
+          title: editTitle,
+          note: editNote,
+          history: newHistory,
+        })
+        .eq('id', editingDocId)
+
+      if (error) throw error
+
+      setDocuments((prev) =>
+        prev.map((doc) =>
+          doc.id === editingDocId
+            ? { 
+                ...doc, 
+                title: editTitle || doc.title, 
+                note: editNote || doc.note, 
+                status: 'Updated',
+                history: newHistory 
+              }
+            : doc,
+        ),
+      )
+      handleCancelEditDocument()
+      showAlert('Success', 'Document updated successfully.')
+    } catch (error) {
+      console.error('Failed to update document:', error)
+      showAlert('Error', 'Failed to update document.')
+    }
+  }
+
+  const handleDeleteDocument = async (id) => {
+    showConfirm(
+      'Delete Document',
+      'Are you sure you want to delete this document?',
+      async () => {
+        try {
+          const { error } = await supabaseClient
+            .from('documents')
+            .delete()
+            .eq('id', id)
+
+          if (error) throw error
+
+          setDocuments((prev) => prev.filter((doc) => doc.id !== id))
+          showAlert('Deleted', 'Document deleted successfully.')
+        } catch (error) {
+          console.error('Failed to delete document:', error)
+          showAlert('Error', 'Failed to delete document.')
+        }
+      }
+    )
+  }
+
+  const handleDeleteBatch = async (sessionId, dateKey) => {
+    showConfirm(
+      'Delete Batch',
+      'Are you sure you want to delete all documents in this batch?',
+      async () => {
+        try {
+          const docsToDelete = documentsByDate[dateKey][sessionId]
+          const docIds = docsToDelete.map(doc => doc.id)
+
+          const { error } = await supabaseClient
+            .from('documents')
+            .delete()
+            .in('id', docIds)
+
+          if (error) throw error
+
+          setDocuments(prev => prev.filter(doc => !docIds.includes(doc.id)))
+          showAlert('Deleted', 'Batch deleted successfully.')
+        } catch (error) {
+          console.error('Failed to delete batch:', error)
+          showAlert('Error', 'Failed to delete batch.')
+        }
+      }
+    )
+  }
+
+  const handleDeleteAllByDate = async (dateKey) => {
+    showConfirm(
+      'Delete All',
+      `Are you sure you want to delete ALL documents from ${dateKey}?`,
+      async () => {
+        try {
+          const docsToDelete = documentsByDate[dateKey]
+          const docIds = Object.values(docsToDelete).flat().map(doc => doc.id)
+
+          const { error } = await supabaseClient
+            .from('documents')
+            .delete()
+            .in('id', docIds)
+
+          if (error) throw error
+
+          setDocuments((prev) => prev.filter((doc) => !docIds.includes(doc.id)))
+          if (selectedDocumentDate === dateKey) {
+            setSelectedDocumentDate(null)
+          }
+          showAlert('Deleted', 'All documents deleted.')
+        } catch (error) {
+          console.error('Failed to delete documents by date:', error)
+          showAlert('Error', 'Failed to delete documents.')
+        }
+      }
+    )
+  }
+
+  const handleDownloadDocument = async (doc) => {
+    if (!doc.url) {
+      showAlert('Download Error', 'Download URL not available.')
+      return
+    }
+
+    try {
+      const response = await fetch(doc.url)
+      const blob = await response.blob()
+      const downloadUrl = window.URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = downloadUrl
+      link.download = doc.fileName || doc.title || 'document'
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.URL.revokeObjectURL(downloadUrl)
+    } catch (error) {
+      console.error('Download failed:', error)
+      window.open(doc.url, '_blank')
+    }
+  }
+
+  const handleDownloadBatch = async (sessionId, dateKey) => {
+    const docsToDownload = documentsByDate[dateKey][sessionId]
+    if (!docsToDownload || !docsToDownload.length) return
+
+    showAlert('Preparing ZIP', `Gathering ${docsToDownload.length} files for download...`)
+    
+    try {
+      const zip = new JSZip()
+      const folderName = `Medical_Records_${dateKey.replace(/\s+/g, '_')}`
+      const folder = zip.folder(folderName)
+
+      for (const doc of docsToDownload) {
+        if (!doc.url) continue
+        try {
+          const response = await fetch(doc.url)
+          const blob = await response.blob()
+          const fileName = doc.fileName || doc.title || `document_${doc.id}`
+          folder.file(fileName, blob)
+        } catch (err) {
+          console.error(`Failed to add file ${doc.title} to zip:`, err)
+        }
+      }
+
+      const content = await zip.generateAsync({ type: 'blob' })
+      saveAs(content, `${folderName}.zip`)
+      showAlert('Success', 'ZIP file downloaded successfully.')
+    } catch (error) {
+      console.error('Batch download failed:', error)
+      showAlert('Download Error', 'Failed to create ZIP file. Trying individual downloads...')
+      for (const doc of docsToDownload) {
+        await handleDownloadDocument(doc)
+        await new Promise(resolve => setTimeout(resolve, 500))
+      }
+    }
+  }
+
+  const handleReplaceDocument = async (documentId, file) => {
+    if (!file || !currentUser?.id) return
+    setReUploadingDocId(documentId)
+
+    try {
+      const fileExt = file.name.split('.').pop()
+      const fileName = `${currentUser.id}/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${fileExt}`
+      const filePath = `${fileName}`
+
+      const { error: uploadError } = await supabaseClient.storage
+        .from('documentUpload')
+        .upload(filePath, file)
+
+      if (uploadError) throw uploadError
+
+      const { data: { publicUrl } } = supabaseClient.storage
+        .from('documentUpload')
+        .getPublicUrl(filePath)
+
+      const docToReplace = documents.find(d => d.id === documentId)
+      const currentTime = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
+      const newHistory = [...(docToReplace?.history || []), { 
+        event: 're-uploaded', 
+        time: currentTime, 
+        filename: file.name 
+      }]
+
+      const { error: dbError } = await supabaseClient
+        .from('documents')
+        .update({
+          file_url: publicUrl,
+          file_path: filePath,
+          title: file.name,
+          history: newHistory,
+          file_size: file.size,
+        })
+        .eq('id', documentId)
+
+      if (dbError) throw dbError
+
+      setDocuments((prev) =>
+        prev.map((doc) =>
+          doc.id === documentId
+            ? {
+                ...doc,
+                title: file.name,
+                fileName: file.name,
+                fileType: file.type || doc.fileType,
+                fileSize: file.size,
+                uploadedAt: new Date().toISOString(),
+                status: 'Re-uploaded',
+                url: publicUrl,
+                filePath: filePath,
+                history: newHistory,
+              }
+            : doc,
+        ),
+      )
+      showAlert('Success', 'Document replaced successfully.')
+    } catch (error) {
+      console.error('Failed to replace document:', error)
+      showAlert('Error', 'Failed to replace document.')
+    } finally {
+      setReUploadingDocId(null)
+    }
+  }
+
+  const filteredDocuments = documents // Could add local search here if needed
+
+  const documentsByDate = useMemo(() => {
+    return filteredDocuments.reduce((groups, doc) => {
+      const dateKey = new Date(doc.uploadedAt).toLocaleDateString('en-GB', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      })
+      groups[dateKey] = groups[dateKey] || {}
+      
+      const sessionId = doc.groupId || 'single'
+      groups[dateKey][sessionId] = groups[dateKey][sessionId] || []
+      groups[dateKey][sessionId].push(doc)
+      return groups
+    }, {})
+  }, [filteredDocuments])
+
+  const documentDates = useMemo(() => Object.keys(documentsByDate).sort((a, b) => new Date(b) - new Date(a)), [documentsByDate])
+
   return (
     <div className="dashboard-layout">
       {/* SIDEBAR */}
@@ -1702,8 +2190,16 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
           <button
             className={`nav-item ${activePage === 'history' ? 'active' : ''}`}
             onClick={() => setActivePage('history')}
+            title="View your appointment history and upcoming visits"
           >
             <span>📅</span> Appointment History
+          </button>
+          <button
+            className={`nav-item ${activePage === 'documents' ? 'active' : ''}`}
+            onClick={() => setActivePage('documents')}
+            title="Manage your uploaded medical records and reports"
+          >
+            <span>📄</span> Documents
           </button>
           <button
             className={`nav-item ${activePage === 'ai' ? 'active' : ''}`}
@@ -2487,6 +2983,247 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
           </div>
         )}
 
+        {/* DOCUMENTS PAGE */}
+        {activePage === 'documents' && (
+          <div className="dash-page active-page">
+            <button className="back-btn-dark" onClick={() => setActivePage('dashboard')}>← Back</button>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '18px', flexWrap: 'wrap' }}>
+              <div>
+                <h2 style={{ color: '#e8ecf4', marginBottom: '10px' }}>Document Vault</h2>
+                <p style={{ color: '#7a8ba7', marginBottom: '18px', maxWidth: '620px' }}>
+                  Upload, organize, and search your healthcare documents from appointment summaries, prescriptions, and reports.
+                </p>
+              </div>
+            </div>
+            
+            <div className="doc-vault-container" style={{ background: 'transparent' }}>
+              <div className="doc-header">
+                {pendingUploads.length > 0 && (
+                  <div className="hospital-card-dark" style={{ padding: '24px', marginBottom: '24px', width: '100%', textAlign: 'left' }}>
+                    <h3 style={{ color: '#e8ecf4', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                      <Plus size={20} />
+                      Pending Uploads ({pendingUploads.length})
+                    </h3>
+                    <div style={{ display: 'grid', gap: '16px' }}>
+                      {pendingUploads.map((item, index) => (
+                        <div key={item.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1fr 1fr auto', gap: '16px', alignItems: 'center', background: 'rgba(255,255,255,0.03)', padding: '12px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)' }}>
+                          <div className="doc-type-icon" style={{ color: '#00e5ff' }}>
+                            {getFileIcon(item.file.type || item.file.name)}
+                          </div>
+                          <input
+                            type="text"
+                            className="dark-input"
+                            value={item.title}
+                            onChange={(e) => {
+                              const newPending = [...pendingUploads]
+                              newPending[index].title = e.target.value
+                              setPendingUploads(newPending)
+                            }}
+                            placeholder="File Title"
+                            title="Enter document title"
+                          />
+                          <input
+                            type="text"
+                            className="dark-input"
+                            value={item.note}
+                            onChange={(e) => {
+                              const newPending = [...pendingUploads]
+                              newPending[index].note = e.target.value
+                              setPendingUploads(newPending)
+                            }}
+                            placeholder="Add a description..."
+                            title="Enter document description"
+                          />
+                          <button 
+                            className="action-icon-btn delete-btn"
+                            style={{ color: '#ff6b6b' }}
+                            onClick={() => setPendingUploads(prev => prev.filter(p => p.id !== item.id))}
+                            title="Remove this file from pending list"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '12px', marginTop: '20px' }}>
+                      <button className="btn btn-outline" style={{ borderColor: 'rgba(255,255,255,0.2)', color: '#7a8ba7' }} onClick={() => setPendingUploads([])} disabled={isUploading} title="Cancel all pending uploads">Cancel</button>
+                      <button className="btn btn-primary" style={{ background: '#00e5ff', color: '#03070f' }} onClick={handleProcessUploads} disabled={isUploading} title="Upload all files">
+                        {isUploading ? 'Uploading...' : 'Start Uploading All'}
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <label className="upload-btn-new" style={{ background: 'rgba(0, 229, 255, 0.1)', border: '1px solid rgba(0, 229, 255, 0.2)', color: '#00e5ff', display: 'flex', alignItems: 'center', gap: '10px', padding: '12px 24px', borderRadius: '12px', cursor: 'pointer', width: 'fit-content' }} title="Select files from your device to upload">
+                  <Plus size={20} />
+                  {isUploading ? 'Uploading...' : 'Upload New File'}
+                  <input
+                    type="file"
+                    accept="application/pdf,image/*,.doc,.docx,text/*"
+                    multiple
+                    onChange={handleDocumentUpload}
+                    style={{ display: 'none' }}
+                  />
+                </label>
+              </div>
+
+              <div className="doc-layout" style={{ marginTop: '30px', display: 'flex', gap: '24px' }}>
+                <aside className="doc-sidebar-dark" style={{ background: 'rgba(255,255,255,0.03)', borderRadius: '16px', padding: '16px', minWidth: '220px' }}>
+                  {documentDates.length === 0 ? (
+                    <p style={{ color: '#7a8ba7', fontSize: '0.9rem', padding: '0 12px' }}>No documents yet.</p>
+                  ) : (
+                    documentDates.map((dateKey) => (
+                      <button
+                        key={dateKey}
+                        className={`date-item ${selectedDocumentDate === dateKey ? 'active' : ''}`}
+                        style={{ 
+                          display: 'flex', 
+                          alignItems: 'center', 
+                          gap: '10px', 
+                          width: '100%', 
+                          padding: '12px', 
+                          borderRadius: '10px', 
+                          background: selectedDocumentDate === dateKey ? 'rgba(0, 229, 255, 0.1)' : 'transparent',
+                          color: selectedDocumentDate === dateKey ? '#00e5ff' : '#7a8ba7',
+                          border: 'none',
+                          cursor: 'pointer',
+                          textAlign: 'left',
+                          marginBottom: '4px',
+                          transition: '0.2s'
+                        }}
+                        onClick={() => setSelectedDocumentDate(dateKey)}
+                      >
+                        <Calendar size={18} />
+                        {dateKey}
+                      </button>
+                    ))
+                  )}
+                </aside>
+
+                <main className="doc-main-dark" style={{ flex: 1 }}>
+                  {(!selectedDocumentDate || !documentsByDate[selectedDocumentDate]) ? (
+                    <div className="hospital-card-dark" style={{ textAlign: 'center', padding: '60px 20px' }}>
+                      <FileText size={48} strokeWidth={1} style={{ marginBottom: '16px', opacity: 0.3, color: '#00e5ff' }} />
+                      <p style={{ color: '#7a8ba7' }}>Select a date to view documents or upload a new file.</p>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="doc-date-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#e8ecf4', fontSize: '1.2rem', fontWeight: '600' }} title={`Documents for ${selectedDocumentDate}`}>
+                          <Calendar size={22} style={{ color: '#00e5ff' }} />
+                          {selectedDocumentDate}
+                        </div>
+                        <button 
+                          className="btn btn-outline" 
+                          style={{ borderColor: 'rgba(239, 68, 68, 0.3)', color: '#ef4444', padding: '6px 12px', fontSize: '0.85rem' }}
+                          onClick={() => handleDeleteAllByDate(selectedDocumentDate)}
+                          title={`Permanently delete all documents from ${selectedDocumentDate}`}
+                        >
+                          <Trash2 size={16} />
+                          Delete All
+                        </button>
+                      </div>
+
+                      <div className="doc-list" style={{ display: 'grid', gap: '20px' }}>
+                        {Object.entries(documentsByDate[selectedDocumentDate]).map(([sessionId, sessionDocs]) => (
+                          <div key={sessionId} className={sessionDocs.length > 1 ? "doc-session-group" : "doc-single-item"} style={{ background: 'rgba(255,255,255,0.02)', padding: '16px', borderRadius: '16px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                            {sessionDocs.length > 1 && (
+                              <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px', gap: '8px' }}>
+                                <button 
+                                  className="btn btn-outline" 
+                                  style={{ borderColor: 'rgba(0, 229, 255, 0.3)', color: '#00e5ff', padding: '4px 10px', fontSize: '0.75rem', borderRadius: '8px' }}
+                                  onClick={() => handleDownloadBatch(sessionId, selectedDocumentDate)}
+                                  title="Download all files in this batch as ZIP"
+                                >
+                                  <Download size={14} />
+                                  Download All
+                                </button>
+                                <button 
+                                  className="btn btn-outline" 
+                                  style={{ borderColor: 'rgba(239, 68, 68, 0.3)', color: '#ef4444', padding: '4px 10px', fontSize: '0.75rem', borderRadius: '8px' }}
+                                  onClick={() => handleDeleteBatch(sessionId, selectedDocumentDate)}
+                                  title="Permanently delete all files in this batch"
+                                >
+                                  <Trash2 size={14} />
+                                  Delete All Files
+                                </button>
+                              </div>
+                            )}
+                            <div style={{ display: 'grid', gap: '12px' }}>
+                              {sessionDocs.map((doc) => (
+                                <div key={doc.id} className="hospital-card-dark" style={{ padding: '16px' }}>
+                                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                    <div 
+                                      className="doc-item-info" 
+                                      style={{ display: 'flex', alignItems: 'center', gap: '12px', cursor: 'pointer' }} 
+                                      onClick={() => window.open(doc.url, '_blank')}
+                                      title="View document in new window"
+                                    >
+                                      <div className="doc-type-icon" style={{ color: '#00e5ff', background: 'rgba(0, 229, 255, 0.1)', padding: '10px', borderRadius: '10px' }}>
+                                        {getFileIcon(doc.fileType || doc.fileName)}
+                                      </div>
+                                      <div style={{ display: 'flex', flexDirection: 'column' }}>
+                                        <span style={{ color: '#e8ecf4', fontWeight: '500' }}>{doc.title || doc.fileName}</span>
+                                        <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                                          {doc.fileSize > 0 && <span style={{ color: '#5a6b87', fontSize: '0.75rem', background: 'rgba(255,255,255,0.05)', padding: '2px 6px', borderRadius: '4px' }}>{(doc.fileSize / 1024).toFixed(1)} KB</span>}
+                                          {doc.note && <span style={{ color: '#7a8ba7', fontSize: '0.85rem' }}>{doc.note}</span>}
+                                        </div>
+                                      </div>
+                                    </div>
+                                    
+                                    <div className="doc-item-actions" style={{ display: 'flex', gap: '8px' }}>
+                                      <button className="action-icon-btn edit-btn" style={{ color: '#7a8ba7' }} title="Edit document title and description" onClick={() => handleEditDocument(doc)}><Edit2 size={18} /></button>
+                                      <button className="action-icon-btn download-btn" style={{ color: '#00e5ff' }} title="Download document to your device" onClick={() => handleDownloadDocument(doc)}><Download size={18} /></button>
+                                      <button className="action-icon-btn delete-btn" style={{ color: '#ef4444' }} title="Permanently delete this document" onClick={() => handleDeleteDocument(doc.id)}><Trash2 size={18} /></button>
+                                    </div>
+                                  </div>
+
+                                  {editingDocId === doc.id && (
+                                    <div style={{ background: 'rgba(255,255,255,0.03)', padding: '16px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.08)', marginTop: '16px', display: 'grid', gap: '12px' }}>
+                                      <input type="text" className="dark-input" value={editTitle} onChange={(e) => setEditTitle(e.target.value)} placeholder="Document title" title="Edit title" />
+                                      <textarea className="dark-input" rows={2} value={editNote} onChange={(e) => setEditNote(e.target.value)} placeholder="Add a note..." title="Edit description" />
+                                      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                                        <label className="btn btn-outline" style={{ borderColor: 'rgba(255,255,255,0.2)', color: '#7a8ba7', padding: '8px 16px', fontSize: '0.85rem', cursor: 'pointer' }} title="Replace this file with a new one">
+                                          Re-upload
+                                          <input type="file" accept="application/pdf,image/*,.doc,.docx,text/*" style={{ display: 'none' }} onChange={(e) => handleReplaceDocument(doc.id, e.target.files?.[0])} />
+                                        </label>
+                                        <button className="btn btn-outline" style={{ borderColor: 'rgba(255,255,255,0.2)', color: '#7a8ba7', padding: '8px 16px', fontSize: '0.85rem' }} onClick={handleCancelEditDocument} title="Discard changes">Cancel</button>
+                                        <button className="btn btn-primary" style={{ background: '#00e5ff', color: '#03070f', padding: '8px 16px', fontSize: '0.85rem' }} onClick={handleSaveDocument} title="Save all changes">Save Changes</button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      <div className="history-section-dark" style={{ marginTop: '40px', padding: '24px', background: 'rgba(255,255,255,0.02)', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#e8ecf4', marginBottom: '20px', fontSize: '1.1rem', fontWeight: '600' }} title="Timeline of all actions performed on these documents">
+                          <FileText size={20} style={{ color: '#00e5ff' }} />
+                          Activity History
+                        </div>
+                        <div className="history-list" style={{ display: 'grid', gap: '12px' }}>
+                          {Object.values(documentsByDate[selectedDocumentDate]).flat().flatMap(doc => 
+                            (doc.history || []).map((h, idx) => ({ ...h, docId: doc.id, idx }))
+                          ).sort((a, b) => b.time.localeCompare(a.time)).map((h) => (
+                            <div key={`history-${h.docId}-${h.idx}`} style={{ display: 'flex', alignItems: 'center', gap: '12px', color: '#7a8ba7', fontSize: '0.9rem' }}>
+                              <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#00e5ff' }}></div>
+                              <span style={{ color: '#e8ecf4' }}>{h.filename}</span>
+                              <span>{h.event} at {h.time}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </main>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* SMART ASSIST PAGE */}
         {activePage === 'smart-assist' && (
           <div className="dash-page active-page">
@@ -2799,6 +3536,34 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                 </button>
                 <button type="button" className="delete-confirm-btn" onClick={handleConfirmDeleteAppointment} disabled={isDeleteSubmitting}>
                   {isDeleteSubmitting ? 'Deleting...' : 'Yes, Delete'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* CUSTOM CURVED MODAL (ALERTS & CONFIRMS) */}
+        {modalState.isOpen && (
+          <div className="custom-modal-overlay">
+            <div className="custom-modal-card">
+              <div className="modal-icon-box">
+                {modalState.type === 'confirm' ? <Trash2 size={24} /> : <FileText size={24} />}
+              </div>
+              <h3 className="modal-title">{modalState.title}</h3>
+              <p className="modal-message">{modalState.message}</p>
+              
+              <div className="modal-actions">
+                {modalState.type === 'confirm' && (
+                  <button className="btn btn-outline modal-btn" onClick={closeModal}>
+                    Cancel
+                  </button>
+                )}
+                <button 
+                  className="btn btn-primary modal-btn" 
+                  style={{ background: modalState.type === 'confirm' ? '#ef4444' : '#71a850' }}
+                  onClick={handleModalConfirm}
+                >
+                  {modalState.type === 'confirm' ? 'Delete' : 'OK'}
                 </button>
               </div>
             </div>

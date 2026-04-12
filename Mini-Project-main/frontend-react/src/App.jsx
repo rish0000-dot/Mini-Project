@@ -17,6 +17,7 @@ const ALLOWED_DASHBOARD_PAGES = new Set([
   'history',
   'ai',
   'profile',
+  'documents',
 ])
 const ALLOWED_FILTERS = new Set(['All', 'Emergency', 'Cardiology', 'Neurology', 'Pediatrics'])
 
@@ -64,7 +65,7 @@ function App() {
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [authError, setAuthError] = useState('')
   const [navScrolled, setNavScrolled] = useState(false)
-  const [activePage, setActivePage] = useState('dashboard')
+  const [activePage, setActivePage] = useState('documents')
   const [activeFilter, setActiveFilter] = useState('All')
 
   const currentUserId = currentUser?.id || null
