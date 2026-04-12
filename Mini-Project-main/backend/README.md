@@ -30,8 +30,15 @@ backend/
    cp .env.example .env
    ```
    Edit `.env` and add your API keys:
-   - `GEMINI_API_KEY` - For AI chat functionality
+  - `OLLAMA_BASE_URL` - Ollama server URL (default: `http://127.0.0.1:11434`)
+  - `OLLAMA_MODEL` - Local model name (default: `llama3.2:1b`)
    - `PORT` - Server port (default: 5001)
+
+  Also ensure Ollama is running locally:
+  ```bash
+  ollama pull llama3.2
+  ollama run llama3.2
+  ```
 
 3. **Start Development Server:**
    ```bash
@@ -73,7 +80,7 @@ backend/
   - Returns: Confirmation with appointment ID
 
 ### AI Chat
-- `POST /api/chat` - Chat with Gemini AI
+- `POST /api/chat` - Chat with local Ollama model
   - Body: `{ message: string }`
   - Returns: AI response
 
@@ -94,9 +101,10 @@ backend/
 ## Environment Variables
 
 ```env
-GEMINI_API_KEY=sk-xxx...          # Google Gemini API key for chat
 PORT=5001                          # Server port
 NODE_ENV=development               # Environment (development/production)
+OLLAMA_BASE_URL=http://127.0.0.1:11434  # Local Ollama server URL
+OLLAMA_MODEL=llama3.2:1b           # Faster local model name
 OVERPASS_URL=...                   # Optional: Custom Overpass API endpoint
 ```
 
@@ -104,9 +112,9 @@ OVERPASS_URL=...                   # Optional: Custom Overpass API endpoint
 
 - **Runtime:** Node.js
 - **Framework:** Express.js 4.19
-- **AI:** Google Generative AI (Gemini)
+- **AI:** Ollama (local LLM)
 - **Data:** JSON file storage (appointments)
-- **External APIs:** Overpass, Nominatim, Gemini
+- **External APIs:** Overpass, Nominatim
 
 ## Development
 

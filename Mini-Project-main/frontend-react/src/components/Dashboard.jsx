@@ -12,7 +12,11 @@ import {
   Calendar, 
   Edit2, 
   FileCode,
-  Download
+  Download,
+  Bot,
+  History,
+  MessageSquarePlus,
+  ChevronRight
 } from 'lucide-react'
 import 'leaflet/dist/leaflet.css'
 
@@ -71,6 +75,10 @@ class SectionErrorBoundary extends Component {
 const HOSPITAL_MIN_DISTANCE_KM = 0.2
 const HOSPITAL_MAX_DISTANCE_KM = 50
 const LIVE_LOCATION_ZOOM = 15
+
+const createChatSessionId = () => `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+const getChatHistoryStorageKey = (userId) => `dashboardChatHistory:${String(userId || 'guest')}`
+const getActiveChatSessionStorageKey = (userId) => `dashboardActiveChatSession:${String(userId || 'guest')}`
 
 const toRadians = (value) => (value * Math.PI) / 180
 
@@ -143,6 +151,55 @@ const getLiveHospitalRating = (hospital) => {
   return (3.9 + (hash % 10) * 0.1).toFixed(1)
 }
 
+const parseCoordinate = (...values) => {
+  for (const value of values) {
+    const parsed = Number.parseFloat(value)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+  return null
+}
+
+const pickHospitalCoordinates = (hospital) => {
+  const lat = parseCoordinate(
+    hospital?.lat,
+    hospital?.raw?.lat,
+    hospital?.raw?.raw?.lat,
+    hospital?.location?.lat,
+    hospital?.raw?.location?.lat,
+  )
+
+  const lon = parseCoordinate(
+    hospital?.lon,
+    hospital?.lng,
+    hospital?.raw?.lon,
+    hospital?.raw?.lng,
+    hospital?.raw?.raw?.lon,
+    hospital?.raw?.raw?.lng,
+    hospital?.location?.lon,
+    hospital?.location?.lng,
+    hospital?.raw?.location?.lon,
+    hospital?.raw?.location?.lng,
+  )
+
+  if (lat === null || lon === null) {
+    return null
+  }
+
+  return { lat, lon }
+}
+
+const isNormalizedHospital = (hospital) => {
+  if (!hospital || typeof hospital !== 'object') return false
+
+  return (
+    typeof hospital.key === 'string' &&
+    typeof hospital.name === 'string' &&
+    Object.prototype.hasOwnProperty.call(hospital, 'raw')
+  )
+}
+
 const normalizeHospitalForSearch = (hospital, index) => {
   if (!hospital || typeof hospital !== 'object') {
     return {
@@ -166,6 +223,7 @@ const normalizeHospitalForSearch = (hospital, index) => {
 
   if (hospital?.displayName || typeof hospital?.distanceKm === 'number') {
     const tags = hospital?.tags || {}
+    const coords = pickHospitalCoordinates(hospital)
     const parsedDistance =
       typeof hospital?.distanceKm === 'number'
         ? hospital.distanceKm
@@ -197,10 +255,14 @@ const normalizeHospitalForSearch = (hospital, index) => {
         phone: tags.phone || '',
         website: tags.website || '',
       },
+      lat: coords?.lat ?? null,
+      lon: coords?.lon ?? null,
       raw: hospital,
       searchTokens: getHospitalSearchTokens(hospital),
     }
   }
+
+  const fallbackCoords = pickHospitalCoordinates(hospital)
 
   return {
     key: `mock-${index}`,
@@ -216,6 +278,8 @@ const normalizeHospitalForSearch = (hospital, index) => {
       phone: '',
       website: '',
     },
+    lat: fallbackCoords?.lat ?? null,
+    lon: fallbackCoords?.lon ?? null,
     raw: hospital,
     searchTokens: getHospitalSearchTokens(hospital),
   }
@@ -469,6 +533,9 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   const [activityHistory, setActivityHistory] = useState([])
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
+  const [chatSessions, setChatSessions] = useState([])
+  const [activeChatSessionId, setActiveChatSessionId] = useState(null)
+  const [isChatHistoryOpen, setIsChatHistoryOpen] = useState(true)
   const [isSending, setChatIsSending] = useState(false)
   const [isProfileEditing, setIsProfileEditing] = useState(false)
   const [profileMemberId, setProfileMemberId] = useState('')
@@ -484,6 +551,8 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   })
   const chatContainerRef = useRef(null)
   const fileInputRef = useRef(null)
+  const chatHistoryHydratedRef = useRef(false)
+  const chatHistoryRestoreInProgressRef = useRef(false)
   const [userLocation, setUserLocation] = useState(null)
   const [locationError, setLocationError] = useState('')
   const [nearbyMapHospitals, setNearbyMapHospitals] = useState([])
@@ -520,6 +589,12 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   const [editTitle, setEditTitle] = useState('')
   const [editNote, setEditNote] = useState('')
   const [reUploadingDocId, setReUploadingDocId] = useState(null)
+
+  const isMissingColumnError = (error, columnName) => {
+    if (!error || !columnName) return false
+    const message = String(error.message || error.details || '')
+    return message.includes(`Could not find the '${columnName}' column`)
+  }
 
   const safeFavoriteHospitals = useMemo(
     () => (Array.isArray(favoriteHospitals) ? favoriteHospitals.filter((favorite) => favorite && typeof favorite === 'object') : []),
@@ -595,6 +670,60 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     const bytes = new Uint8Array(16)
     window.crypto.getRandomValues(bytes)
     return Array.from(bytes, (byte) => charset[byte % charset.length]).join('')
+  }
+
+  const loadChatSessionsFromStorage = (userId) => {
+    try {
+      const storageKey = getChatHistoryStorageKey(userId)
+      const raw = window.localStorage.getItem(storageKey)
+      const parsed = raw ? JSON.parse(raw) : []
+
+      if (!Array.isArray(parsed)) return []
+
+      return parsed.filter((session) => session && session.id && Array.isArray(session.messages))
+    } catch (error) {
+      console.error('Failed to load chat history:', error)
+      return []
+    }
+  }
+
+  const saveChatSessionsToStorage = (userId, sessions) => {
+    if (!userId) return
+
+    try {
+      const storageKey = getChatHistoryStorageKey(userId)
+      window.localStorage.setItem(storageKey, JSON.stringify(sessions.slice(0, 20)))
+    } catch (error) {
+      console.error('Failed to persist chat history:', error)
+    }
+  }
+
+  const loadActiveChatSessionIdFromStorage = (userId) => {
+    if (!userId) return null
+
+    try {
+      const storageKey = getActiveChatSessionStorageKey(userId)
+      const stored = window.localStorage.getItem(storageKey)
+      return stored || null
+    } catch (error) {
+      console.error('Failed to load active chat session:', error)
+      return null
+    }
+  }
+
+  const saveActiveChatSessionIdToStorage = (userId, sessionId) => {
+    if (!userId) return
+
+    try {
+      const storageKey = getActiveChatSessionStorageKey(userId)
+      if (sessionId) {
+        window.localStorage.setItem(storageKey, sessionId)
+      } else {
+        window.localStorage.removeItem(storageKey)
+      }
+    } catch (error) {
+      console.error('Failed to persist active chat session:', error)
+    }
   }
 
   useEffect(() => {
@@ -944,6 +1073,86 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
       chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight
     }
   }, [chatMessages])
+
+  // Load chat history for current user.
+  useEffect(() => {
+    chatHistoryHydratedRef.current = false
+    chatHistoryRestoreInProgressRef.current = true
+
+    if (!currentUser?.id) {
+      setChatSessions([])
+      setActiveChatSessionId(null)
+      setChatMessages([])
+      setChatInput('')
+      chatHistoryRestoreInProgressRef.current = false
+      return
+    }
+
+    const normalized = loadChatSessionsFromStorage(currentUser.id)
+    setChatSessions(normalized)
+
+    const storedActiveSessionId = loadActiveChatSessionIdFromStorage(currentUser.id)
+    const restoredActiveSession =
+      normalized.find((session) => session.id === storedActiveSessionId) ||
+      normalized[0] ||
+      null
+
+    if (restoredActiveSession) {
+      setActiveChatSessionId(restoredActiveSession.id)
+      setChatMessages(Array.isArray(restoredActiveSession.messages) ? restoredActiveSession.messages : [])
+    } else {
+      setActiveChatSessionId(null)
+      setChatMessages([])
+    }
+
+    // Prevent persistence effects from writing empty defaults before restore state settles.
+    window.setTimeout(() => {
+      chatHistoryHydratedRef.current = true
+      chatHistoryRestoreInProgressRef.current = false
+    }, 0)
+    setChatInput('')
+  }, [currentUser?.id])
+
+  // Persist chat sessions whenever history changes.
+  useEffect(() => {
+    if (!currentUser?.id || !chatHistoryHydratedRef.current || chatHistoryRestoreInProgressRef.current) return
+
+    saveChatSessionsToStorage(currentUser.id, chatSessions)
+  }, [chatSessions, currentUser?.id])
+
+  useEffect(() => {
+    if (!currentUser?.id || !chatHistoryHydratedRef.current || chatHistoryRestoreInProgressRef.current) return
+
+    saveActiveChatSessionIdToStorage(currentUser.id, activeChatSessionId)
+  }, [activeChatSessionId, currentUser?.id])
+
+  // Keep active session synced with currently visible chat messages.
+  useEffect(() => {
+    if (!activeChatSessionId || chatMessages.length === 0) return
+
+    const firstUserMessage = chatMessages.find((msg) => msg.type === 'user')?.text || 'New conversation'
+    const title = firstUserMessage.length > 48 ? `${firstUserMessage.slice(0, 48)}...` : firstUserMessage
+    const updatedAt = new Date().toISOString()
+
+    setChatSessions((prev) => {
+      const session = {
+        id: activeChatSessionId,
+        title,
+        updatedAt,
+        messages: chatMessages,
+      }
+
+      const existingIndex = prev.findIndex((item) => item.id === activeChatSessionId)
+      const next = [...prev]
+      if (existingIndex >= 0) {
+        next[existingIndex] = session
+      } else {
+        next.unshift(session)
+      }
+
+      return next.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt))
+    })
+  }, [chatMessages, activeChatSessionId])
 
   // Filter hospitals when query or filter changes
   useEffect(() => {
@@ -1396,32 +1605,53 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   }
 
   const resolveHospitalCoordinates = (hospital) => {
-    const directLat = Number.parseFloat(hospital?.raw?.lat ?? hospital?.lat)
-    const directLon = Number.parseFloat(hospital?.raw?.lon ?? hospital?.lon)
-    if (Number.isFinite(directLat) && Number.isFinite(directLon)) {
-      return { lat: directLat, lon: directLon }
+    const directCoords = pickHospitalCoordinates(hospital)
+    if (directCoords) {
+      return directCoords
     }
 
-    const matched = nearbyMapHospitals.find((candidate) => {
+    const hospitalName = String(hospital?.name || hospital?.displayName || '').toLowerCase()
+    const hospitalAddress = String(hospital?.address || hospital?.displayAddress || '').toLowerCase()
+    const hospitalId = String(hospital?.id || hospital?.raw?.id || '').trim()
+
+    const matchedCandidates = nearbyMapHospitals.filter((candidate) => {
       if (!candidate) return false
 
-      const candidateName = String(candidate.displayName || candidate.tags?.name || '').toLowerCase()
-      const hospitalName = String(hospital?.name || hospital?.displayName || '').toLowerCase()
-      if (candidateName && hospitalName && candidateName === hospitalName) {
+      const candidateId = String(candidate.id || '').trim()
+      if (hospitalId && candidateId && hospitalId === candidateId) {
         return true
       }
 
+      const candidateName = String(candidate.displayName || candidate.tags?.name || '').toLowerCase()
+      const nameMatch = candidateName && hospitalName && candidateName === hospitalName
+
       const candidateStreet = String(candidate.tags?.['addr:street'] || '').toLowerCase()
-      const hospitalAddress = String(hospital?.address || hospital?.displayAddress || '').toLowerCase()
-      return candidateStreet && hospitalAddress && hospitalAddress.includes(candidateStreet)
+      const addressMatch = candidateStreet && hospitalAddress && hospitalAddress.includes(candidateStreet)
+
+      return nameMatch || addressMatch
     })
+
+    const matched =
+      matchedCandidates.length <= 1
+        ? matchedCandidates[0] || null
+        : matchedCandidates
+            .map((candidate) => {
+              const candidateDistance = Number.parseFloat(candidate.distanceKm)
+              const targetDistance = Number.parseFloat(hospital?.distanceKm)
+              const score =
+                Number.isFinite(candidateDistance) && Number.isFinite(targetDistance)
+                  ? Math.abs(candidateDistance - targetDistance)
+                  : Number.MAX_SAFE_INTEGER
+
+              return { candidate, score }
+            })
+            .sort((a, b) => a.score - b.score)[0]?.candidate || null
 
     if (!matched) return null
 
-    const matchedLat = Number.parseFloat(matched.lat)
-    const matchedLon = Number.parseFloat(matched.lon)
-    if (Number.isFinite(matchedLat) && Number.isFinite(matchedLon)) {
-      return { lat: matchedLat, lon: matchedLon }
+    const matchedCoords = pickHospitalCoordinates(matched)
+    if (matchedCoords) {
+      return matchedCoords
     }
 
     return null
@@ -1619,9 +1849,15 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     filterHospitals()
   }
 
-  const handleAIChat = async () => {
-    const message = chatInput.trim()
+  const handleAIChat = async (prefilledMessage = '') => {
+    const message = (prefilledMessage || chatInput).trim()
     if (!message) return
+
+    const assistantMessageId = createChatSessionId()
+
+    if (!activeChatSessionId) {
+      setActiveChatSessionId(createChatSessionId())
+    }
 
     addHistoryItem({
       key: 'chat',
@@ -1631,13 +1867,23 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     })
 
     // Add user message
-    const newMessages = [...chatMessages, { type: 'user', text: message }]
+    const newMessages = [...chatMessages, { id: `${Date.now()}-user`, type: 'user', text: message }]
     setChatMessages(newMessages)
     setChatInput('')
     setChatIsSending(true)
 
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: assistantMessageId,
+        type: 'bot',
+        text: '',
+        isLoading: true,
+      },
+    ])
+
     try {
-      const res = await fetch(apiUrl('/api/chat'), {
+      const res = await fetch(apiUrl('/api/chat/stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message })
@@ -1647,15 +1893,59 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
         throw new Error(`Proxy error: ${res.status}`)
       }
 
-      const data = await res.json()
-      setChatMessages(prev => [...prev, { type: 'bot', text: data.reply || data.message || "I don't know what to say." }])
+      const reader = res.body?.getReader()
+      if (!reader) {
+        const data = await res.text()
+        setChatMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, text: data || "I don't know what to say.", isLoading: false }
+              : msg,
+          ),
+        )
+        return
+      }
+
+      const decoder = new TextDecoder()
+      let streamedText = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        streamedText += decoder.decode(value, { stream: true })
+        setChatMessages((prev) =>
+          prev.map((msg) =>
+            msg.id === assistantMessageId
+              ? { ...msg, text: streamedText, isLoading: true }
+              : msg,
+          ),
+        )
+      }
+
+      streamedText += decoder.decode()
+
+      setChatMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMessageId
+            ? { ...msg, text: streamedText || "I don't know what to say.", isLoading: false }
+            : msg,
+        ),
+      )
     } catch (err) {
       console.error('AI Chat Error:', err)
-      setChatMessages(prev => [...prev, {
-        type: 'bot',
-        text: '⚠️ Our AI service is currently taking a break. In a health emergency, please contact a doctor immediately!',
-        isError: true
-      }])
+      setChatMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === assistantMessageId
+            ? {
+                ...msg,
+                text: '⚠️ Our AI service is currently taking a break. In a health emergency, please contact a doctor immediately!',
+                isError: true,
+                isLoading: false,
+              }
+            : msg,
+        ),
+      )
     } finally {
       setChatIsSending(false)
     }
@@ -1663,11 +1953,37 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
 
   const sendSuggestion = (text) => {
     setChatInput(text)
-    setTimeout(() => {
-      setChatInput('')
-      const newMessages = [...chatMessages, { type: 'user', text }]
-      setChatMessages(newMessages)
-    }, 100)
+    handleAIChat(text)
+  }
+
+  const startNewChat = () => {
+    setChatMessages([])
+    setChatInput('')
+    setActiveChatSessionId(null)
+  }
+
+  const openChatSession = (sessionId) => {
+    const selectedSession = chatSessions.find((session) => session.id === sessionId)
+    if (!selectedSession) return
+
+    setActiveChatSessionId(sessionId)
+    setChatMessages(selectedSession.messages)
+    setChatInput('')
+  }
+
+  const deleteChatSession = (sessionId) => {
+    setChatSessions((prev) => {
+      const filtered = prev.filter((session) => session.id !== sessionId)
+
+      if (activeChatSessionId === sessionId) {
+        const nextSession = filtered[0] || null
+        setActiveChatSessionId(nextSession?.id || null)
+        setChatMessages(nextSession?.messages || [])
+        setChatInput('')
+      }
+
+      return filtered
+    })
   }
 
   const mapBounds = useMemo(() => {
@@ -1701,7 +2017,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
         : (Array.isArray(nearbyMapHospitals) && nearbyMapHospitals.length > 0 ? nearbyMapHospitals : MOCK_HOSPITALS)
 
     return (Array.isArray(sourceHospitals) ? sourceHospitals : [])
-      .map((hospital, index) => normalizeHospitalForSearch(hospital, index))
+      .map((hospital, index) => (isNormalizedHospital(hospital) ? hospital : normalizeHospitalForSearch(hospital, index)))
       .filter(Boolean)
   }, [visibleHospitals, nearbyMapHospitals])
 
@@ -1790,21 +2106,31 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
           filename: file.name 
         }]
 
-        const { data: dbData, error: dbError } = await supabaseClient
+        const insertPayload = {
+          user_id: currentUser.id,
+          file_url: publicUrl,
+          file_path: filePath,
+          title: title || file.name,
+          note: note || '',
+          history: initialHistory,
+          group_id: sessionId,
+          file_size: file.size,
+        }
+
+        let { data: dbData, error: dbError } = await supabaseClient
           .from('documents')
-          .insert([
-            {
-              user_id: currentUser.id,
-              file_url: publicUrl,
-              file_path: filePath,
-              title: title || file.name,
-              note: note || '',
-              history: initialHistory,
-              group_id: sessionId,
-              file_size: file.size,
-            },
-          ])
+          .insert([insertPayload])
           .select()
+
+        if (dbError && isMissingColumnError(dbError, 'file_size')) {
+          const { file_size: _fileSize, ...insertPayloadWithoutSize } = insertPayload
+          const retryResult = await supabaseClient
+            .from('documents')
+            .insert([insertPayloadWithoutSize])
+            .select()
+          dbData = retryResult.data
+          dbError = retryResult.error
+        }
 
         if (dbError) throw dbError
 
@@ -2067,16 +2393,27 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
         filename: file.name 
       }]
 
-      const { error: dbError } = await supabaseClient
+      const updatePayload = {
+        file_url: publicUrl,
+        file_path: filePath,
+        title: file.name,
+        history: newHistory,
+        file_size: file.size,
+      }
+
+      let { error: dbError } = await supabaseClient
         .from('documents')
-        .update({
-          file_url: publicUrl,
-          file_path: filePath,
-          title: file.name,
-          history: newHistory,
-          file_size: file.size,
-        })
+        .update(updatePayload)
         .eq('id', documentId)
+
+      if (dbError && isMissingColumnError(dbError, 'file_size')) {
+        const { file_size: _fileSize, ...updatePayloadWithoutSize } = updatePayload
+        const retryResult = await supabaseClient
+          .from('documents')
+          .update(updatePayloadWithoutSize)
+          .eq('id', documentId)
+        dbError = retryResult.error
+      }
 
       if (dbError) throw dbError
 
@@ -3171,10 +3508,28 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                                       </div>
                                     </div>
                                     
-                                    <div className="doc-item-actions" style={{ display: 'flex', gap: '8px' }}>
-                                      <button className="action-icon-btn edit-btn" style={{ color: '#7a8ba7' }} title="Edit document title and description" onClick={() => handleEditDocument(doc)}><Edit2 size={18} /></button>
-                                      <button className="action-icon-btn download-btn" style={{ color: '#00e5ff' }} title="Download document to your device" onClick={() => handleDownloadDocument(doc)}><Download size={18} /></button>
-                                      <button className="action-icon-btn delete-btn" style={{ color: '#ef4444' }} title="Permanently delete this document" onClick={() => handleDeleteDocument(doc.id)}><Trash2 size={18} /></button>
+                                    <div className="doc-item-actions">
+                                      <button
+                                        className="doc-action-btn doc-action-edit"
+                                        title="Edit document title and description"
+                                        onClick={() => handleEditDocument(doc)}
+                                      >
+                                        <Edit2 size={17} />
+                                      </button>
+                                      <button
+                                        className="doc-action-btn doc-action-download"
+                                        title="Download document to your device"
+                                        onClick={() => handleDownloadDocument(doc)}
+                                      >
+                                        <Download size={17} />
+                                      </button>
+                                      <button
+                                        className="doc-action-btn doc-action-delete"
+                                        title="Permanently delete this document"
+                                        onClick={() => handleDeleteDocument(doc.id)}
+                                      >
+                                        <Trash2 size={17} />
+                                      </button>
                                     </div>
                                   </div>
 
@@ -3468,57 +3823,140 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
         {activePage === 'ai' && (
           <div className="dash-page active-page">
             <button className="back-btn-dark" onClick={() => setActivePage('dashboard')}>← Back</button>
-            <h2 style={{ color: '#e8ecf4', marginBottom: '24px' }}>AI Health Assistant</h2>
-
-            <div className="chat-container" ref={chatContainerRef}>
-              {chatMessages.length === 0 ? (
-                <div style={{ textAlign: 'center', color: '#7a8ba7', padding: '40px 20px' }}>
-                  <div style={{ fontSize: '3rem', marginBottom: '16px' }}>🤖</div>
-                  <p>Start a conversation with our AI health assistant</p>
-                </div>
-              ) : (
-                chatMessages.map((msg, idx) => (
-                  <div key={idx} className={`chat-msg ${msg.type}`}>
-                    <div className="chat-avatar">{msg.type === 'user' ? '👤' : '🤖'}</div>
-                    <div className={`chat-bubble ${msg.isError ? 'error' : ''}`}>
-                      {msg.text}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="ai-input-group">
-              <input
-                type="text"
-                className="ai-input"
-                placeholder="Ask about your health concerns..."
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyPress={(e) => e.key === 'Enter' && handleAIChat()}
-                disabled={isSending}
-              />
-              <button className="ai-send-btn" onClick={handleAIChat} disabled={isSending}>
-                {isSending ? '...' : 'Send'}
-              </button>
-            </div>
-
-            {chatMessages.length === 0 && (
-              <div style={{ marginTop: '24px' }}>
-                <p style={{ color: '#7a8ba7', marginBottom: '12px', fontSize: '0.9rem' }}>Quick suggestions:</p>
-                <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                  <button className="suggestion-btn" onClick={() => sendSuggestion('What are common symptoms of flu?')}>
-                    Flu symptoms
-                  </button>
-                  <button className="suggestion-btn" onClick={() => sendSuggestion('I have a headache and fever')}>
-                    Headache & fever
-                  </button>
-                  <button className="suggestion-btn" onClick={() => sendSuggestion('How to stay healthy?')}>
-                    Health tips
-                  </button>
+            <div className="ai-header-bar">
+              <div className="ai-header-title-wrap">
+                <div className="ai-header-icon"><Bot size={20} /></div>
+                <div>
+                  <h2 style={{ color: '#e8ecf4', marginBottom: '6px' }}>AI Health Assistant</h2>
+                  <p style={{ color: '#8fa3bb', fontSize: '0.88rem' }}>Local Ollama-powered assistant with persistent chat history.</p>
                 </div>
               </div>
-            )}
+              <div className="ai-header-actions">
+                <button className="ai-new-chat-btn" onClick={startNewChat}>
+                  <MessageSquarePlus size={16} />
+                  New Chat
+                </button>
+              </div>
+            </div>
+
+            <div className={`ai-layout-grid ${isChatHistoryOpen ? 'history-open' : 'history-collapsed'}`}>
+              <div>
+                <div className="chat-container" ref={chatContainerRef}>
+                  {chatMessages.length === 0 ? (
+                    <div className="ai-chat-empty-state">
+                      <div className="ai-chat-empty-icon"><Bot size={38} /></div>
+                      <p>Start a conversation with your AI assistant.</p>
+                    </div>
+                  ) : (
+                    <>
+                      {chatMessages.map((msg, idx) => (
+                        <div key={idx} className={`chat-msg ${msg.type}`}>
+                          <div className="chat-avatar">{msg.type === 'user' ? '👤' : '🤖'}</div>
+                          <div className={`chat-bubble ${msg.isError ? 'error' : ''}`}>
+                            {msg.isLoading ? (
+                              <div className="typing-dots" role="status" aria-label="AI is typing">
+                                <span></span>
+                                <span></span>
+                                <span></span>
+                              </div>
+                            ) : (
+                              msg.text
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </>
+                  )}
+                </div>
+
+                <div className="ai-input-group">
+                  <input
+                    type="text"
+                    className="ai-input"
+                    placeholder="Ask about symptoms, remedies, or general wellness..."
+                    value={chatInput}
+                    onChange={(e) => setChatInput(e.target.value)}
+                    onKeyPress={(e) => e.key === 'Enter' && handleAIChat()}
+                    disabled={isSending}
+                  />
+                  <button className="ai-send-btn" onClick={handleAIChat} disabled={isSending}>
+                    {isSending ? '...' : 'Send'}
+                  </button>
+                </div>
+
+                {chatMessages.length === 0 && (
+                  <div style={{ marginTop: '24px' }}>
+                    <p style={{ color: '#7a8ba7', marginBottom: '12px', fontSize: '0.9rem' }}>Quick suggestions:</p>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button className="suggestion-btn" onClick={() => sendSuggestion('What are common symptoms of flu?')}>
+                        Flu symptoms
+                      </button>
+                      <button className="suggestion-btn" onClick={() => sendSuggestion('I have a headache and fever')}>
+                        Headache & fever
+                      </button>
+                      <button className="suggestion-btn" onClick={() => sendSuggestion('How to stay healthy?')}>
+                        Health tips
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <aside className={`ai-history-panel ${isChatHistoryOpen ? 'open' : 'collapsed'}`}>
+                <div className="ai-history-panel-head">
+                  <div className="ai-history-title">
+                    <History size={16} />
+                    {isChatHistoryOpen ? 'Chat History' : 'History'}
+                  </div>
+                  <button
+                    className="ai-history-toggle-btn"
+                    onClick={() => setIsChatHistoryOpen((prev) => !prev)}
+                    title={isChatHistoryOpen ? 'Close chat history' : 'Open chat history'}
+                  >
+                    {isChatHistoryOpen ? <ChevronRight size={16} /> : <History size={16} />}
+                  </button>
+                </div>
+
+                {isChatHistoryOpen && (
+                  chatSessions.length === 0 ? (
+                    <p className="ai-history-empty">No previous chats yet.</p>
+                  ) : (
+                    <div className="ai-history-list">
+                      {chatSessions.map((session) => (
+                        <div
+                          key={session.id}
+                          className={`ai-history-item ${session.id === activeChatSessionId ? 'active' : ''}`}
+                          onClick={() => openChatSession(session.id)}
+                          role="button"
+                          tabIndex={0}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              openChatSession(session.id)
+                            }
+                          }}
+                        >
+                          <div>
+                            <div className="ai-history-item-title">{session.title || 'Conversation'}</div>
+                            <div className="ai-history-item-time">{new Date(session.updatedAt).toLocaleString()}</div>
+                          </div>
+                          <button
+                            className="ai-history-delete-btn"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              deleteChatSession(session.id)
+                            }}
+                            title="Delete chat history"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )
+                )}
+              </aside>
+            </div>
           </div>
         )}
 

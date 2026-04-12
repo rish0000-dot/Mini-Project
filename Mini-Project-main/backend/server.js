@@ -1,7 +1,6 @@
 import express from 'express'
 import cors from 'cors'
 import dotenv from 'dotenv'
-import { GoogleGenerativeAI } from '@google/generative-ai'
 import { fileURLToPath } from 'url'
 import path from 'path'
 import {
@@ -33,38 +32,192 @@ app.use((req, res, next) => {
 })
 
 app.get('/api/health', (req, res) => {
-  res.json({ ok: true, service: 'healthcare-hub-backend', time: new Date().toISOString() })
+  res.json({
+    ok: true,
+    service: 'healthcare-hub-backend',
+    aiProvider: 'ollama',
+    ollamaModel: process.env.OLLAMA_MODEL || 'llama3.2:1b',
+    time: new Date().toISOString(),
+  })
 })
 
-const genAI = process.env.GEMINI_API_KEY ? new GoogleGenerativeAI(process.env.GEMINI_API_KEY) : null
-const model = genAI
-  ? genAI.getGenerativeModel({
-      model: 'gemini-1.5-flash',
-      systemInstruction:
-        'You are a basic health assistant. Give only general advice. Do not provide medical diagnosis. Always suggest consulting a doctor for any health concerns or emergencies.',
-    })
-  : null
+const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434'
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'llama3.2:1b'
+const OLLAMA_NUM_PREDICT_RAW = Number.parseInt(process.env.OLLAMA_NUM_PREDICT || '220', 10)
+const OLLAMA_NUM_PREDICT = Number.isFinite(OLLAMA_NUM_PREDICT_RAW)
+  ? Math.min(512, Math.max(96, OLLAMA_NUM_PREDICT_RAW))
+  : 220
+const GREETING_ONLY_PATTERN = /^(hi+|hii+|hello+|hey+|hlo+|hlw+|hle+|namaste+|namaskar+|salam+)\b[\s!.?]*$/i
+const GREETING_REPLY = 'Hi! How can I assist you today?'
+
+const isGreetingOnlyMessage = (message) => GREETING_ONLY_PATTERN.test(String(message || '').trim())
+
+const buildOllamaMessages = (message) => [
+  {
+    role: 'system',
+    content:
+      'You are a healthcare guidance assistant. Give complete and clear responses in markdown with these sections when relevant: **Possible reasons**, **What you can do now**, **Red flags**, **When to see a doctor**. Use short bullet points under each section. Never cut off mid-sentence. Never diagnose with certainty. For emergency symptoms, advise immediate medical help. Answer the user query directly and do not use generic greetings like "Hey sir, how can I assist today" unless the user sent only a greeting.',
+  },
+  {
+    role: 'user',
+    content: message,
+  },
+]
+
+const createOllamaPayload = (message, stream = false) => ({
+  model: OLLAMA_MODEL,
+  stream,
+  keep_alive: '1h',
+  options: {
+    num_predict: OLLAMA_NUM_PREDICT,
+    temperature: 0.1,
+    top_p: 0.85,
+  },
+  messages: buildOllamaMessages(message),
+})
+
+const extractOllamaText = async (response) => {
+  const payload = await response.json()
+  return payload?.message?.content || "I'm not sure how to respond right now."
+}
 
 app.post('/api/chat', async (req, res) => {
   const { message } = req.body
 
   try {
-    if (!process.env.GEMINI_API_KEY || !model) {
-      return res.status(500).json({ error: 'Gemini API key is not configured on the server.' })
+    const lastUserMessage = String(message || '').trim()
+    if (!lastUserMessage) {
+      return res.status(400).json({ error: 'message is required' })
     }
 
-    const lastUserMessage = message || 'Hello'
-    const result = await model.generateContent(lastUserMessage)
-    const response = await result.response
-    const text = response.text()
+    if (isGreetingOnlyMessage(lastUserMessage)) {
+      return res.json({ reply: GREETING_REPLY })
+    }
+
+    const ollamaResponse = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createOllamaPayload(lastUserMessage, false)),
+    })
+
+    if (!ollamaResponse.ok) {
+      const details = await ollamaResponse.text()
+      return res.status(502).json({
+        error: 'Ollama returned a non-success response.',
+        details,
+      })
+    }
+
+    const text = await extractOllamaText(ollamaResponse)
 
     res.json({ reply: text })
   } catch (error) {
-    console.error('Gemini API Error details:', error)
-    res.status(500).json({
+    console.error('Ollama API Error details:', error)
+    const isConnectionIssue = /ECONNREFUSED|fetch failed|ENOTFOUND/i.test(String(error?.message || ''))
+
+    res.status(isConnectionIssue ? 503 : 500).json({
       message: 'AI service error',
       details: error.message,
-      reply: "I'm having trouble thinking right now. Please try again.",
+      reply: isConnectionIssue
+        ? 'Ollama server is not reachable. Start Ollama and run: ollama pull llama3.2'
+        : "I'm having trouble thinking right now. Please try again.",
+    })
+  }
+})
+
+app.post('/api/chat/stream', async (req, res) => {
+  const { message } = req.body
+
+  try {
+    const lastUserMessage = String(message || '').trim()
+    if (!lastUserMessage) {
+      return res.status(400).json({ error: 'message is required' })
+    }
+
+    if (isGreetingOnlyMessage(lastUserMessage)) {
+      res.status(200)
+      res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+      res.setHeader('Cache-Control', 'no-cache, no-transform')
+      res.setHeader('Connection', 'keep-alive')
+      res.flushHeaders?.()
+      res.write(GREETING_REPLY)
+      res.end()
+      return
+    }
+
+    const ollamaResponse = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createOllamaPayload(lastUserMessage, true)),
+    })
+
+    if (!ollamaResponse.ok || !ollamaResponse.body) {
+      const details = await ollamaResponse.text()
+      return res.status(502).json({
+        error: 'Ollama returned a non-success response.',
+        details,
+      })
+    }
+
+    res.status(200)
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache, no-transform')
+    res.setHeader('Connection', 'keep-alive')
+    res.flushHeaders?.()
+
+    const reader = ollamaResponse.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+
+        try {
+          const chunk = JSON.parse(trimmed)
+          const content = chunk?.message?.content || ''
+          if (content) {
+            res.write(content)
+          }
+        } catch (parseError) {
+          console.error('Failed to parse Ollama stream chunk:', parseError)
+        }
+      }
+    }
+
+    buffer += decoder.decode()
+
+    if (buffer.trim()) {
+      try {
+        const chunk = JSON.parse(buffer.trim())
+        const content = chunk?.message?.content || ''
+        if (content) {
+          res.write(content)
+        }
+      } catch (parseError) {
+        console.error('Failed to parse final Ollama stream chunk:', parseError)
+      }
+    }
+
+    res.end()
+  } catch (error) {
+    console.error('Ollama streaming API Error details:', error)
+    const isConnectionIssue = /ECONNREFUSED|fetch failed|ENOTFOUND/i.test(String(error?.message || ''))
+
+    res.status(isConnectionIssue ? 503 : 500).json({
+      message: 'AI service error',
+      details: error.message,
+      reply: isConnectionIssue
+        ? 'Ollama server is not reachable. Start Ollama and run: ollama pull llama3.2:1b'
+        : "I'm having trouble thinking right now. Please try again.",
     })
   }
 })

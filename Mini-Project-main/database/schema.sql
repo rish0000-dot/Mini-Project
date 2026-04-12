@@ -17,6 +17,7 @@ CREATE TABLE public.documents (
   file_url TEXT NOT NULL,
   title TEXT NOT NULL,
   text_content TEXT,
+  file_size BIGINT,
   upload_date DATE DEFAULT CURRENT_DATE,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
