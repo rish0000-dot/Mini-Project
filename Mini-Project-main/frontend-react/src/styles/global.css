@@ -17,6 +17,8 @@
     --text-muted: #64748b;
     --white: #ffffff;
     --error: #ef4444;
+    --yellow: #fbbf24;
+    --orange: #f97316;
     
     --bg-gradient: linear-gradient(135deg, var(--bg-light) 0%, var(--bg-mint) 100%);
     --primary-gradient: linear-gradient(135deg, var(--primary), var(--accent));
@@ -42,7 +44,6 @@ body {
     color: var(--text-main);
     line-height: 1.6;
     overflow-x: hidden;
-    cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36"><circle cx="18" cy="18" r="12" fill="none" stroke="%2300b8ff" stroke-opacity="0.35" stroke-width="1"/><circle cx="18" cy="18" r="8.5" fill="none" stroke="%2300b8ff" stroke-width="1.8"/><circle cx="18" cy="18" r="2.3" fill="%23ffffff"/></svg>') 18 18, auto;
 }
 
 h1, h2, h3, h4, .nav-logo {
@@ -613,20 +614,6 @@ h1, h2, h3, h4, .nav-logo {
     min-height: 100vh;
     background: #070d1a;
     position: relative;
-}
-
-/* Custom image-style cursor */
-.dashboard-layout,
-.dashboard-layout * {
-    cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 36 36"><circle cx="18" cy="18" r="12" fill="none" stroke="%2300b8ff" stroke-opacity="0.35" stroke-width="1"/><circle cx="18" cy="18" r="8.5" fill="none" stroke="%2300b8ff" stroke-width="1.8"/><circle cx="18" cy="18" r="2.3" fill="%23ffffff"/></svg>') 18 18, auto;
-}
-
-button:not(.nav-item):not(.logout-btn-sidebar),
-a,
-.chip,
-input[type="text"],
-.avatar-wrapper {
-    cursor: url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><path d="M5 4L26 15L16.5 17.5L12.8 29L5 4Z" fill="%23eef7ff" stroke="%23008ff0" stroke-width="1.4" stroke-linejoin="round"/></svg>') 6 4, pointer;
 }
 
 .dashboard-layout::before {
@@ -1314,14 +1301,26 @@ select.dark-input:hover {
 
 /* Keep native select dropdown options readable across browsers/OS themes. */
 .dark-input option {
-    background: #ffffff;
-    color: #0d1f2d;
+    background: #111c2a;
+    color: #e8ecf4;
 }
 
 .dark-input option:checked,
 .dark-input option:hover {
-    background: #0b66d6;
-    color: #ffffff;
+    background: #00d4aa;
+    color: #062118;
+}
+
+/* Remove bright native number spinners for dark UI consistency. */
+input.dark-input[type='number'] {
+    appearance: textfield;
+    -moz-appearance: textfield;
+}
+
+input.dark-input[type='number']::-webkit-outer-spin-button,
+input.dark-input[type='number']::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
 }
 
 .search-btn-dark {
@@ -2461,6 +2460,63 @@ select.dark-input:hover {
     }
 }
 
+.custom-modal-overlay {
+    position: fixed;
+    inset: 0;
+    z-index: 1300;
+    background: rgba(4, 10, 20, 0.62);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+}
+
+.custom-modal-card {
+    width: min(92vw, 460px);
+    border-radius: 18px;
+    padding: 24px;
+    background: linear-gradient(145deg, rgba(8, 18, 34, 0.98), rgba(11, 27, 42, 0.96));
+    border: 1px solid rgba(0, 212, 170, 0.28);
+    box-shadow: 0 24px 60px rgba(2, 7, 16, 0.72), 0 0 0 1px rgba(0, 212, 170, 0.08) inset;
+    animation: deleteModalIn 220ms ease-out;
+}
+
+.modal-icon-box {
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    display: grid;
+    place-items: center;
+    color: #8cf3dd;
+    border: 1px solid rgba(0, 212, 170, 0.34);
+    background: rgba(0, 212, 170, 0.11);
+    margin-bottom: 12px;
+}
+
+.modal-title {
+    margin: 0;
+    color: #e8ecf4;
+    font-size: 1.18rem;
+}
+
+.modal-message {
+    margin: 10px 0 0;
+    color: #9eb2c5;
+    line-height: 1.6;
+}
+
+.modal-actions {
+    margin-top: 18px;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.modal-btn {
+    min-width: 92px;
+}
+
 @media (max-width: 520px) {
     .delete-confirm-dialog {
       padding: 18px;
@@ -2496,6 +2552,43 @@ select.dark-input:hover {
     transform: scale(1.08) !important;
     box-shadow: 0 0 12px rgba(0,212,170,0.3) !important;
     background: rgba(0,212,170,0.15) !important;
+}
+
+/* ── CUSTOM CURSOR ── */
+#cur {
+    width: 36px;
+    height: 36px;
+    border: 2px solid var(--yellow);
+    border-radius: 50%;
+    position: fixed;
+    pointer-events: none;
+    z-index: 9999;
+    transform: translate(-50%, -50%);
+    transition: width .2s, height .2s, border-color .2s;
+    mix-blend-mode: difference;
+}
+
+#cur-dot {
+    width: 5px;
+    height: 5px;
+    background: var(--yellow);
+    border-radius: 50%;
+    position: fixed;
+    pointer-events: none;
+    z-index: 9999;
+    transform: translate(-50%, -50%);
+}
+
+/* Hover effect - jab link/button par cursor jaaye */
+body:has(a:hover) #cur,
+body:has(button:hover) #cur {
+    width: 52px;
+    height: 52px;
+    border-color: var(--orange);
+}
+
+a, button, [onclick], [role="button"] {
+    cursor: none;
 }
 
 /* Map Container Animations */

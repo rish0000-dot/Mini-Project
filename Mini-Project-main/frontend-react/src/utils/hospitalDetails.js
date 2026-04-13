@@ -338,18 +338,20 @@ export const buildHospitalDetail = (hospital) => {
   }
 }
 
-export const createAppointmentRecord = (detail, form) => ({
+// Accepts optional overrideHospitalName for strict doctor panel matching
+export const createAppointmentRecord = (detail, form, overrideHospitalName = null) => ({
   id: `apt-${Date.now()}`,
   date: form.date,
   time: form.time,
-  hospital: detail.name,
+  hospital: overrideHospitalName || detail.name,
   patientName: form.patientName || '',
   phone: form.phone || '',
   email: form.email || '',
   doctor: form.doctor,
   specialty: form.service || form.specialty,
-  status: 'Upcoming',
-  notes: form.notes || `Booked through ${detail.name}.`,
+  status: 'Pending',
+  approvalStatus: 'pending',
+  notes: form.notes || `Booked through ${overrideHospitalName || detail.name}.`,
 })
 
 export const getDefaultAppointmentForm = (detail) => {

@@ -515,6 +515,91 @@
   text-shadow: 0 0 12px rgba(0, 229, 255, 0.45);
 }
 
+.landing-v2 .inside-dashboard {
+  background:
+    radial-gradient(circle at 12% 20%, rgba(0, 229, 255, 0.08), transparent 38%),
+    radial-gradient(circle at 88% 82%, rgba(123, 47, 255, 0.08), transparent 42%),
+    var(--bg2);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.landing-v2 .inside-grid {
+  margin-top: 50px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.landing-v2 .inside-card {
+  border-radius: 20px;
+  border: 1px solid rgba(0, 229, 255, 0.2);
+  background: linear-gradient(145deg, rgba(8, 18, 34, 0.95), rgba(7, 14, 26, 0.9));
+  padding: 18px;
+  min-height: 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  transition: transform 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+}
+
+.landing-v2 .inside-card:hover {
+  transform: translateY(-4px);
+  border-color: rgba(0, 229, 255, 0.42);
+  box-shadow: 0 18px 40px rgba(0, 229, 255, 0.12);
+}
+
+.landing-v2 .inside-card-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.landing-v2 .inside-pill {
+  font-size: 0.68rem;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: #07151f;
+  background: linear-gradient(135deg, #00e5ff, #57f8ff);
+  border-radius: 999px;
+  padding: 6px 10px;
+  font-weight: 700;
+}
+
+.landing-v2 .inside-status {
+  font-size: 0.7rem;
+  color: #9ee7dc;
+  border: 1px solid rgba(0, 229, 255, 0.25);
+  border-radius: 999px;
+  padding: 5px 10px;
+}
+
+.landing-v2 .inside-title {
+  font-family: 'Syne', sans-serif;
+  font-size: 1.1rem;
+}
+
+.landing-v2 .inside-desc {
+  color: var(--muted);
+  line-height: 1.7;
+  font-size: 0.88rem;
+  flex: 1;
+}
+
+.landing-v2 .inside-link {
+  text-align: left;
+  color: var(--c);
+  font-weight: 600;
+  cursor: pointer;
+  transition: letter-spacing 0.2s ease, text-shadow 0.2s ease;
+}
+
+.landing-v2 .inside-link:hover {
+  letter-spacing: 0.3px;
+  text-shadow: 0 0 12px rgba(0, 229, 255, 0.45);
+}
+
 .landing-v2 .toggle-section {
   padding: 105px 60px;
 }
@@ -822,6 +907,7 @@
   .landing-v2 .hero-inner,
   .landing-v2 .panel,
   .landing-v2 .feat-grid,
+  .landing-v2 .inside-grid,
   .landing-v2 .steps,
   .landing-v2 .stats-inner,
   .landing-v2 .footer-grid {
@@ -854,6 +940,7 @@
   .landing-v2 .hero-inner,
   .landing-v2 .panel,
   .landing-v2 .feat-grid,
+  .landing-v2 .inside-grid,
   .landing-v2 .steps,
   .landing-v2 .stats-inner,
   .landing-v2 .footer-grid {
