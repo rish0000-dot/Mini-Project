@@ -36,7 +36,7 @@ It combines:
 
 ## Tech Stack
 
-- Frontend: React, Vite, Axios, Leaflet
+- Frontend: React, Vite, Axios, Leaflet !
 - Backend: Node.js, Express, CORS, Dotenv
 - AI: Google Generative AI (Gemini)
 - Database/Auth: Supabase (Auth, SQL, RLS, Storage)
