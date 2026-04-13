@@ -50,9 +50,6 @@ Mini-Project-main/
 |  |- data/
 |  |  |- appointments.json
 |  |  |- hospital-favorites.json
-|  |- db/
-|  |  |- schema.sql
-|  |  |- migrations/
 |  |- utils/
 |  |  |- appointments-store.js
 |  |  |- favorites-store.js
@@ -62,6 +59,7 @@ Mini-Project-main/
 |- config/
 |- database/
 |  |- schema.sql
+|  |- migrations/
 |- frontend-react/
 |  |- src/
 |  |  |- components/

@@ -46,7 +46,7 @@ const mapAppointmentToRow = (appointment) => ({
   phone: appointment.phone || null,
   doctor: appointment.doctor || null,
   specialty: appointment.specialty || null,
-  status: appointment.status || 'Upcoming',
+  status: appointment.status || 'Pending',
   notes: appointment.notes || null,
   created_at: appointment.createdAt || new Date().toISOString(),
 })
@@ -59,11 +59,16 @@ const mapRowToAppointment = (row) => ({
   hospital: row.hospital,
   patientName: row.patient_name || '',
   phone: row.phone || '',
+  email: row.email || row.patient_email || '',
   doctor: row.doctor || '',
   specialty: row.specialty || '',
-  status: row.status || 'Upcoming',
+  status: row.status || 'Pending',
   notes: row.notes || '',
   createdAt: row.created_at,
+  doctorId: row.doctor_id || null,
+  approvalStatus: row.approval_status || '',
+  approvedAt: row.approved_at || null,
+  approvedBy: row.approved_by || null,
 })
 
 const ensureStore = async () => {
@@ -91,6 +96,33 @@ const writeAppointments = async (appointments) => {
   await fs.writeFile(appointmentsPath, JSON.stringify(appointments, null, 2), 'utf8')
 }
 
+const normalizeDoctorName = (value = '') =>
+  String(value)
+    .replace(/^dr\.?\s*/i, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '')
+    .trim()
+
+const listAllAppointments = async () => {
+  const supabaseClient = getSupabaseClient()
+
+  if (supabaseClient) {
+    const { data, error } = await supabaseClient
+      .from(APPOINTMENTS_TABLE)
+      .select('*')
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      console.error('Supabase list all appointments failed, falling back to file store:', error.message)
+    } else {
+      return (data || []).map(mapRowToAppointment)
+    }
+  }
+
+  const appointments = await readAppointments()
+  return appointments.sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0))
+}
+
 const listAppointmentsForUser = async (userId) => {
   const supabaseClient = getSupabaseClient()
 
@@ -112,6 +144,19 @@ const listAppointmentsForUser = async (userId) => {
   return appointments
     .filter((appointment) => appointment.userId === userId)
     .sort((a, b) => new Date(b.createdAt || b.date || 0) - new Date(a.createdAt || a.date || 0))
+}
+
+const listAppointmentsForDoctor = async (doctorName, hospitalName) => {
+  const normalizedDoctorName = normalizeDoctorName(doctorName)
+  const normalizedHospitalName = String(hospitalName || '').trim().toLowerCase()
+  if (!normalizedDoctorName || !normalizedHospitalName) return []
+
+  const allAppointments = await listAllAppointments()
+  return allAppointments.filter(
+    (appointment) =>
+      normalizeDoctorName(appointment?.doctor || '') === normalizedDoctorName &&
+      String(appointment?.hospital || '').trim().toLowerCase() === normalizedHospitalName
+  )
 }
 
 const addAppointment = async (appointment) => {
@@ -171,4 +216,85 @@ const deleteAppointmentForUser = async ({ userId, appointmentId }) => {
   return deletedAppointment
 }
 
-export { addAppointment, deleteAppointmentForUser, listAppointmentsForUser, readAppointments }
+const approveAppointment = async ({ appointmentId, approvedBy }) => {
+  const supabaseClient = getSupabaseClient()
+
+  if (supabaseClient) {
+    const { data, error } = await supabaseClient
+      .from(APPOINTMENTS_TABLE)
+      .update({
+        status: 'Confirmed',
+      })
+      .eq('id', appointmentId)
+      .select()
+      .single()
+
+    if (error) {
+      console.error('Supabase approve appointment failed, falling back to file store:', error.message)
+    } else {
+      return data ? mapRowToAppointment(data) : null
+    }
+  }
+
+  const appointments = await readAppointments()
+  const index = appointments.findIndex((apt) => apt.id === appointmentId)
+
+  if (index === -1) {
+    return null
+  }
+
+  appointments[index].approvalStatus = 'approved'
+  appointments[index].approvedAt = new Date().toISOString()
+  appointments[index].approvedBy = approvedBy
+  appointments[index].status = 'Confirmed'
+
+  await writeAppointments(appointments)
+  return appointments[index]
+}
+
+const rejectAppointment = async ({ appointmentId, approvedBy }) => {
+  const supabaseClient = getSupabaseClient()
+
+  if (supabaseClient) {
+    const { data, error } = await supabaseClient
+      .from(APPOINTMENTS_TABLE)
+      .update({
+        status: 'Rejected',
+      })
+      .eq('id', appointmentId)
+      .select()
+      .single()
+
+    if (error) {
+      console.error('Supabase reject appointment failed, falling back to file store:', error.message)
+    } else {
+      return data ? mapRowToAppointment(data) : null
+    }
+  }
+
+  const appointments = await readAppointments()
+  const index = appointments.findIndex((apt) => apt.id === appointmentId)
+
+  if (index === -1) {
+    return null
+  }
+
+  appointments[index].approvalStatus = 'rejected'
+  appointments[index].approvedAt = new Date().toISOString()
+  appointments[index].approvedBy = approvedBy
+  appointments[index].status = 'Rejected'
+
+  await writeAppointments(appointments)
+  return appointments[index]
+}
+
+export {
+  addAppointment,
+  approveAppointment,
+  deleteAppointmentForUser,
+  listAllAppointments,
+  listAppointmentsForDoctor,
+  listAppointmentsForUser,
+  readAppointments,
+  rejectAppointment,
+}

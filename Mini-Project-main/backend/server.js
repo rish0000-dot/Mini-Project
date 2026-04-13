@@ -11,7 +11,14 @@ import {
   searchHospitals,
   searchServices,
 } from './utils/healthcare.js'
-import { addAppointment, deleteAppointmentForUser, listAppointmentsForUser } from './utils/appointments-store.js'
+import {
+  addAppointment,
+  approveAppointment,
+  deleteAppointmentForUser,
+  listAppointmentsForDoctor,
+  listAppointmentsForUser,
+  rejectAppointment,
+} from './utils/appointments-store.js'
 import {
   addFavoriteHospital,
   deleteFavoriteHospitalForUser,
@@ -329,8 +336,8 @@ app.post('/api/appointments', async (req, res) => {
     }
 
     const appointment = createAppointmentRecord({ detail, form, userId })
-    await addAppointment(appointment)
-    res.status(201).json({ appointment })
+    const savedAppointment = await addAppointment(appointment)
+    res.status(201).json({ appointment: savedAppointment || appointment })
   } catch (error) {
     console.error('Appointment create error:', error)
     res.status(500).json({ error: 'Failed to save appointment' })
@@ -360,6 +367,98 @@ app.delete('/api/appointments/:appointmentId', async (req, res) => {
   } catch (error) {
     console.error('Appointment delete error:', error)
     res.status(500).json({ error: 'Failed to delete appointment' })
+  }
+})
+
+// Get doctor's pending appointments for approval
+app.get('/api/appointments/doctor/pending', async (req, res) => {
+  try {
+    const doctorName = String(req.query.doctorName || '').trim()
+    const hospitalName = String(req.query.hospitalName || '').trim()
+    if (!doctorName || !hospitalName) {
+      return res.status(400).json({ error: 'doctorName and hospitalName are required' })
+    }
+
+    const appointments = await listAppointmentsForDoctor(doctorName, hospitalName)
+    const pendingAppointments = appointments.filter((appointment) => {
+      const approvalStatus = String(appointment?.approvalStatus || appointment?.approval_status || '').toLowerCase()
+      const status = String(appointment?.status || '').toLowerCase()
+
+      if (approvalStatus === 'approved' || approvalStatus === 'rejected') return false
+      if (approvalStatus === 'pending') return true
+
+      if (status === 'pending' || status === 'upcoming') return true
+      const isFinalizedStatus = ['confirmed', 'completed', 'cancelled', 'rejected'].includes(status)
+      return !isFinalizedStatus
+    })
+
+    res.json({ appointments: pendingAppointments })
+  } catch (error) {
+    console.error('Doctor pending appointments error:', error)
+    res.status(500).json({ error: 'Failed to fetch pending appointments' })
+  }
+})
+
+// Get doctor's all appointments
+app.get('/api/appointments/doctor/all', async (req, res) => {
+  try {
+    const doctorName = String(req.query.doctorName || '').trim()
+    const hospitalName = String(req.query.hospitalName || '').trim()
+    if (!doctorName || !hospitalName) {
+      return res.status(400).json({ error: 'doctorName and hospitalName are required' })
+    }
+
+    const appointments = await listAppointmentsForDoctor(doctorName, hospitalName)
+    res.json({ appointments })
+  } catch (error) {
+    console.error('Doctor appointments error:', error)
+    res.status(500).json({ error: 'Failed to fetch appointments' })
+  }
+})
+
+// Approve appointment
+app.put('/api/appointments/:appointmentId/approve', async (req, res) => {
+  try {
+    const appointmentId = String(req.params.appointmentId || '').trim()
+    const approvedBy = String(req.body?.approvedBy || '').trim()
+    
+    if (!appointmentId) {
+      return res.status(400).json({ error: 'appointmentId is required' })
+    }
+
+    const updatedAppointment = await approveAppointment({ appointmentId, approvedBy })
+    
+    if (!updatedAppointment) {
+      return res.status(404).json({ error: 'Appointment not found' })
+    }
+
+    res.json({ ok: true, message: 'Appointment approved', appointment: updatedAppointment })
+  } catch (error) {
+    console.error('Appointment approve error:', error)
+    res.status(500).json({ error: 'Failed to approve appointment' })
+  }
+})
+
+// Reject appointment
+app.put('/api/appointments/:appointmentId/reject', async (req, res) => {
+  try {
+    const appointmentId = String(req.params.appointmentId || '').trim()
+    const approvedBy = String(req.body?.approvedBy || '').trim()
+    
+    if (!appointmentId) {
+      return res.status(400).json({ error: 'appointmentId is required' })
+    }
+
+    const updatedAppointment = await rejectAppointment({ appointmentId, approvedBy })
+    
+    if (!updatedAppointment) {
+      return res.status(404).json({ error: 'Appointment not found' })
+    }
+
+    res.json({ ok: true, message: 'Appointment rejected', appointment: updatedAppointment })
+  } catch (error) {
+    console.error('Appointment reject error:', error)
+    res.status(500).json({ error: 'Failed to reject appointment' })
   }
 })
 

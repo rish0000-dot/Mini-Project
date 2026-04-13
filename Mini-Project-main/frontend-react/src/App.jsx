@@ -2,6 +2,8 @@ import React, { useState, useEffect, Component } from 'react'
 import { supabaseClient } from './utils/supabase'
 import LandingPage from './components/LandingPage'
 import Dashboard from './components/Dashboard'
+import DoctorPanel from './components/DoctorPanel'
+import AdminPanel from './components/AdminPanel'
 import AuthModal from './components/AuthModal'
 import './styles/global.css'
 
@@ -62,6 +64,7 @@ function App() {
   const [currentUser, setCurrentUser] = useState(null)
   const [isAuthChecking, setIsAuthChecking] = useState(true)
   const [isSignUpMode, setIsSignUpMode] = useState(false)
+  const [authRole, setAuthRole] = useState('user')
   const [showAuthModal, setShowAuthModal] = useState(false)
   const [authError, setAuthError] = useState('')
   const [navScrolled, setNavScrolled] = useState(false)
@@ -97,7 +100,6 @@ function App() {
 
       if (storedPage) {
         setActivePage(sanitizeDashboardPage(storedPage))
-        setShowLandingFirst(false)
       }
 
       if (storedFilter) {
@@ -133,6 +135,11 @@ function App() {
       const { data: { session }, error } = await supabaseClient.auth.getSession()
       if (error) throw error
       setCurrentUser(session?.user || null)
+      const roleFromSession =
+        session?.user?.user_metadata?.role ||
+        session?.user?.user_metadata?.account_type ||
+        'user'
+      setAuthRole(roleFromSession === 'doctor' ? 'doctor' : roleFromSession === 'admin' ? 'admin' : 'user')
     } catch (err) {
       console.error('Authentication check failed:', err.message)
       setCurrentUser(null)
@@ -142,8 +149,9 @@ function App() {
     }
   }
 
-  const handleShowAuth = (mode) => {
+  const handleShowAuth = (mode, role = 'user') => {
     setIsSignUpMode(mode === 'signup')
+    setAuthRole(role === 'doctor' ? 'doctor' : role === 'admin' ? 'admin' : 'user')
     setShowAuthModal(true)
     setAuthError('')
   }
@@ -152,6 +160,11 @@ function App() {
     setShowAuthModal(false)
     setAuthError('')
   }
+
+  const currentUserRole =
+    currentUser?.user_metadata?.role ||
+    currentUser?.user_metadata?.account_type ||
+    authRole
 
   return (
     <AppErrorBoundary>
@@ -170,6 +183,33 @@ function App() {
             onShowAuth={handleShowAuth}
           />
         </>
+      ) : currentUserRole === 'admin' ? (
+        <AdminPanel
+          currentUser={currentUser}
+          onLogout={() => {
+            supabaseClient.auth.signOut()
+            setCurrentUser(null)
+            setAuthRole('user')
+            setActivePage('dashboard')
+            setActiveFilter('All')
+          }}
+        />
+      ) : currentUserRole === 'doctor' ? (
+        <DoctorPanel
+          currentUser={currentUser}
+          onUserUpdate={(updatedUser) => {
+            if (updatedUser) {
+              setCurrentUser(updatedUser)
+            }
+          }}
+          onLogout={() => {
+            supabaseClient.auth.signOut()
+            setCurrentUser(null)
+            setAuthRole('user')
+            setActivePage('dashboard')
+            setActiveFilter('All')
+          }}
+        />
       ) : (
         <Dashboard
           currentUser={currentUser}
@@ -180,6 +220,7 @@ function App() {
           onLogout={() => {
             supabaseClient.auth.signOut()
             setCurrentUser(null)
+            setAuthRole('user')
             setActivePage('dashboard')
             setActiveFilter('All')
           }}
@@ -191,6 +232,8 @@ function App() {
         onClose={handleCloseAuth}
         isSignUpMode={isSignUpMode}
         setIsSignUpMode={setIsSignUpMode}
+        authRole={authRole}
+        setAuthRole={setAuthRole}
         authError={authError}
         setAuthError={setAuthError}
         onAuthSuccess={() => {

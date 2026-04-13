@@ -3,6 +3,7 @@ import JSZip from 'jszip'
 import { saveAs } from 'file-saver'
 import { Map, MapControls, Marker, Popup, hospitalIcon } from '../components/ui/map'
 import HospitalDetailPage from './HospitalDetailPage'
+import { writeNearbyHospitalCache } from '../utils/doctorHospitalSearch'
 import { 
   Trash2, 
   FileText,
@@ -81,6 +82,49 @@ const getChatHistoryStorageKey = (userId) => `dashboardChatHistory:${String(user
 const getActiveChatSessionStorageKey = (userId) => `dashboardActiveChatSession:${String(userId || 'guest')}`
 
 const toRadians = (value) => (value * Math.PI) / 180
+
+const parseLocalDateFromYmd = (value) => {
+  const [year, month, day] = String(value || '')
+    .split('-')
+    .map((part) => Number.parseInt(part, 10))
+
+  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
+    return null
+  }
+
+  return new Date(year, month - 1, day)
+}
+
+const getAppointmentDisplayStatus = (appointment) => {
+  const approvalStatus = String(appointment?.approvalStatus || '').toLowerCase()
+  const rawStatus = String(appointment?.status || '').toLowerCase()
+
+  if (approvalStatus === 'rejected' || rawStatus === 'rejected' || rawStatus === 'cancelled') {
+    return 'Rejected'
+  }
+
+  if (approvalStatus === 'pending' || rawStatus === 'pending') {
+    return 'Pending'
+  }
+
+  if (approvalStatus !== 'approved') {
+    if (rawStatus === 'completed') return 'Completed'
+    if (rawStatus === 'upcoming') return 'Upcoming'
+  }
+
+  const bookingDate = parseLocalDateFromYmd(appointment?.date)
+  if (!bookingDate) return 'Upcoming'
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  bookingDate.setHours(0, 0, 0, 0)
+
+  const dayDiff = Math.round((bookingDate.getTime() - today.getTime()) / (24 * 60 * 60 * 1000))
+  if (dayDiff < 0) return 'Completed'
+  if (dayDiff === 0) return 'Today'
+  if (dayDiff === 1) return 'Tomorrow'
+  return 'Upcoming'
+}
 
 const getDistanceKm = (from, to) => {
   const earthRadiusKm = 6371
@@ -656,13 +700,33 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     if (modalState.onConfirm) {
       modalState.onConfirm()
     }
+
+    if (
+      modalState.type === 'alert' &&
+      String(modalState.message || '').toLowerCase().includes('your profile is saved')
+    ) {
+      setIsProfileEditing(false)
+    }
+
     closeModal()
   }
 
-  const getFallbackMemberId = (userId) => {
-    if (!userId) return 'HUB-UNASSIGNED'
-    const compact = String(userId).replace(/-/g, '').toUpperCase()
-    return `HUB-${compact.slice(-8)}`
+  const getFallbackMemberId = (name, userId) => {
+    const firstName = String(name || 'user')
+      .trim()
+      .split(/\s+/)[0]
+    const base = String(firstName || 'user')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '') || 'user'
+
+    // Deterministic per-user fallback so two users never show same temporary ID.
+    const compact = String(userId || '').replace(/-/g, '')
+    const tail = compact.slice(-6)
+    const numeric = tail
+      ? String(parseInt(tail, 16) % 10000).padStart(4, '0')
+      : '0001'
+
+    return `${base}@${numeric}`
   }
 
   const getRandomPassword = () => {
@@ -1040,6 +1104,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
       const normalizedHospitals = Array.isArray(data.hospitals) ? data.hospitals : []
 
       setNearbyMapHospitals(normalizedHospitals)
+      writeNearbyHospitalCache(normalizedHospitals)
       setShowHospitalMarkers(true)
       addHistoryItem({
         key: 'hospitals',
@@ -1050,6 +1115,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     } catch (error) {
       console.error('Failed to fetch hospitals from backend:', error)
       setNearbyMapHospitals([])
+      writeNearbyHospitalCache([])
     }
   }
 
@@ -1232,7 +1298,20 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
         setAvatarUrl(savedAvatarUrl)
       }
 
-      setProfileMemberId(data?.member_id || getFallbackMemberId(currentUser.id))
+      let resolvedMemberId = String(data?.member_id || '')
+      const hasSequentialFormat = /^[a-z0-9]+@[0-9]+$/.test(resolvedMemberId)
+
+      if (!hasSequentialFormat) {
+        const { data: assignedMemberId, error: assignError } = await supabaseClient.rpc('assign_member_id_for_current_user')
+
+        if (!assignError && typeof assignedMemberId === 'string' && /^[a-z0-9]+@[0-9]+$/.test(assignedMemberId)) {
+          resolvedMemberId = assignedMemberId
+        }
+      }
+
+      setProfileMemberId(
+        resolvedMemberId || getFallbackMemberId(data?.name || profileDraft.fullName || fullName, currentUser?.id),
+      )
 
       const provider = currentUser?.app_metadata?.provider || currentUser?.user_metadata?.provider
       const storedPassword = String(data?.login_password || authPassword || profileDraft.password || '')
@@ -1282,7 +1361,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
       setProfileDraft((prev) => ({ ...prev, password: storedPassword }))
     } catch (err) {
       console.error('Load avatar failed:', err.message)
-      setProfileMemberId(getFallbackMemberId(currentUser?.id))
+      setProfileMemberId(getFallbackMemberId(profileDraft.fullName || fullName, currentUser?.id))
 
       const authAvatarPath = currentUser?.user_metadata?.avatar_path || ''
       const fallbackAvatarUrl = await resolveAvatarFromStorage(authAvatarPath)
@@ -1347,6 +1426,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     try {
       if (currentUser && supabaseClient) {
         const nextPassword = String(profileDraft.password || profilePassword || '').trim()
+        const warnings = []
 
         if (nextPassword && nextPassword !== profilePassword) {
           const { error: authUpdateError } = await supabaseClient.auth.updateUser({
@@ -1354,28 +1434,48 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
           })
 
           if (authUpdateError) {
-            throw authUpdateError
+            warnings.push(`Password update skipped: ${authUpdateError.message || 'unknown reason'}`)
           }
         }
 
-        const { error: profileUpsertError } = await supabaseClient
-          .from('profiles')
-          .upsert(
-            {
-              id: currentUser.id,
-              avatar_url: avatarUrl,
-              login_password: nextPassword || null,
-              name: profileDraft.fullName || fullName,
-            },
-            { onConflict: 'id' },
-          )
+        const baseProfilePayload = {
+          id: currentUser.id,
+          avatar_url: avatarUrl,
+          login_password: nextPassword || null,
+          name: profileDraft.fullName || fullName,
+        }
 
-        if (profileUpsertError) {
-          throw profileUpsertError
+        const { data: existingProfile, error: profileLookupError } = await supabaseClient
+          .from('profiles')
+          .select('id')
+          .eq('id', currentUser.id)
+          .maybeSingle()
+
+        if (profileLookupError) {
+          throw profileLookupError
+        }
+
+        if (existingProfile?.id) {
+          const { error: profileUpdateError } = await supabaseClient
+            .from('profiles')
+            .update(baseProfilePayload)
+            .eq('id', currentUser.id)
+
+          if (profileUpdateError) {
+            throw profileUpdateError
+          }
+        } else {
+          const { error: profileUpsertError } = await supabaseClient
+            .from('profiles')
+            .upsert(baseProfilePayload, { onConflict: 'id' })
+
+          if (profileUpsertError) {
+            throw profileUpsertError
+          }
         }
 
         // Optional profile columns might not exist in every schema; ignore if unavailable.
-        await supabaseClient
+        const { error: optionalProfileError } = await supabaseClient
           .from('profiles')
           .update({
             full_name: profileDraft.fullName,
@@ -1385,19 +1485,50 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
           })
           .eq('id', currentUser.id)
 
-        if (avatarUrl) {
-          await supabaseClient.auth.updateUser({
-            data: {
-              avatar_url: avatarUrl,
-              login_password: nextPassword || profilePassword || '',
-            },
-          })
+        if (
+          optionalProfileError &&
+          !isMissingColumnError(optionalProfileError, 'full_name') &&
+          !isMissingColumnError(optionalProfileError, 'phone') &&
+          !isMissingColumnError(optionalProfileError, 'city') &&
+          !isMissingColumnError(optionalProfileError, 'bio')
+        ) {
+          warnings.push(`Extra profile fields not saved: ${optionalProfileError.message || 'unknown reason'}`)
         }
 
-          if (nextPassword) {
-            setProfilePassword(nextPassword)
-            setProfileDraft((prev) => ({ ...prev, password: nextPassword }))
+        const { error: metadataError } = await supabaseClient.auth.updateUser({
+          data: {
+            full_name: profileDraft.fullName,
+            first_name: String(profileDraft.fullName || '').trim().split(/\s+/)[0] || firstName,
+            phone: profileDraft.phone,
+            city: profileDraft.city,
+            bio: profileDraft.bio,
+            avatar_url: avatarUrl || '',
+            login_password: nextPassword || profilePassword || '',
+          },
+        })
+
+        if (metadataError) {
+          warnings.push(`Metadata sync skipped: ${metadataError.message || 'unknown reason'}`)
+        }
+
+        if (nextPassword) {
+          setProfilePassword(nextPassword)
+          setProfileDraft((prev) => ({ ...prev, password: nextPassword }))
+        }
+
+        // Best-effort: assign real global sequential member_id (name@123x) if still missing/invalid.
+        if (!/^[a-z0-9]+@[0-9]+$/.test(String(profileMemberId || ''))) {
+          const { data: assignedMemberId, error: assignError } = await supabaseClient.rpc('assign_member_id_for_current_user')
+          if (!assignError && typeof assignedMemberId === 'string' && /^[a-z0-9]+@[0-9]+$/.test(assignedMemberId)) {
+            setProfileMemberId(assignedMemberId)
           }
+        }
+
+        if (warnings.length > 0) {
+          console.warn('Profile saved with notes:', warnings.join(' | '))
+        }
+
+        showAlert('Saved', 'Your profile is saved')
       }
 
       addHistoryItem({
@@ -1409,6 +1540,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
       setIsProfileEditing(false)
     } catch (error) {
       console.error('Failed to save profile details:', error)
+      showAlert('Profile save failed', String(error?.message || 'Unable to save profile right now. Please try again.'))
     }
   }
 
@@ -1473,11 +1605,86 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
     return buildHospitalDetail(selectedHospital)
   }, [selectedHospital])
 
-  const openHospitalDetail = (hospital, sourcePage = activePage, nextAppointmentContext = null) => {
+  const toDoctorCardFromProfile = (profile) => {
+    const name = String(profile?.name || '').trim()
+    if (!name) return null
+
+    const specialty = String(profile?.specialization || 'General Medicine').trim() || 'General Medicine'
+    const qualification = String(profile?.qualification || 'MBBS').trim() || 'MBBS'
+    const expValue = Number.parseInt(profile?.experience_years, 10)
+
+    return {
+      name: name.startsWith('Dr.') ? name : `Dr. ${name}`,
+      specialty,
+      degree: qualification,
+      experience: Number.isFinite(expValue) ? `${expValue}+ yrs` : 'Experienced',
+      shift: 'Available for OPD',
+      hospitalName: String(profile?.hospital_name || '').trim(),
+    }
+  }
+
+  const mergeDoctorsByName = (baseDoctors, verifiedDoctors) => {
+    const seen = new Set()
+    const merged = []
+
+    ;[...(Array.isArray(verifiedDoctors) ? verifiedDoctors : []), ...(Array.isArray(baseDoctors) ? baseDoctors : [])].forEach((doctor) => {
+      const key = String(doctor?.name || '').trim().toLowerCase()
+      if (!key || seen.has(key)) return
+      seen.add(key)
+      merged.push(doctor)
+    })
+
+    return merged
+  }
+
+  const fetchVerifiedDoctorsForHospital = async (hospitalName) => {
+    const trimmedHospital = String(hospitalName || '').trim()
+    if (!trimmedHospital) return []
+
+    const doctorColumns = 'id,name,hospital_name,specialization,qualification,experience_years,verification_status,role'
+
+    const runQuery = async (hospitalFilter, useLike = false) => {
+      let query = supabaseClient
+        .from('profiles')
+        .select(doctorColumns)
+        .eq('role', 'doctor')
+        .eq('verification_status', 'verified')
+
+      query = useLike ? query.ilike('hospital_name', hospitalFilter) : query.eq('hospital_name', hospitalFilter)
+
+      const { data, error } = await query
+      if (error) throw error
+      return Array.isArray(data) ? data : []
+    }
+
+    try {
+      let doctors = await runQuery(trimmedHospital)
+
+      if (doctors.length === 0) {
+        const escapedName = trimmedHospital.replace(/[%_]/g, '\\$&')
+        doctors = await runQuery(`%${escapedName}%`, true)
+      }
+
+      return doctors.map(toDoctorCardFromProfile).filter(Boolean)
+    } catch (error) {
+      console.error('Failed to load verified doctors for hospital:', error)
+      return []
+    }
+  }
+
+  const openHospitalDetail = async (hospital, sourcePage = activePage, nextAppointmentContext = null) => {
     const safeBackPage = sourcePage && sourcePage !== 'hospital-detail' ? sourcePage : 'search'
     setHospitalDetailBackPage(safeBackPage)
     setAppointmentContext(nextAppointmentContext)
-    setSelectedHospital(hospital)
+
+    const baseDetail = buildHospitalDetail(hospital)
+    const verifiedDoctors = await fetchVerifiedDoctorsForHospital(baseDetail.name)
+    const enrichedHospital = {
+      ...baseDetail,
+      doctors: mergeDoctorsByName(baseDetail.doctors, verifiedDoctors),
+    }
+
+    setSelectedHospital(enrichedHospital)
     setActivePage('hospital-detail')
     window.scrollTo({ top: 0, behavior: 'smooth' })
   }
@@ -1563,14 +1770,74 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
   }
 
   const handleBookAppointment = async ({ detail, form }) => {
+    const selectedDoctorName = String(form?.doctor || '').trim().toLowerCase()
+    const matchedDoctor = (Array.isArray(detail?.doctors) ? detail.doctors : []).find(
+      (doctor) => String(doctor?.name || '').trim().toLowerCase() === selectedDoctorName,
+    )
+
+    // Always prefer hospital name attached to selected verified doctor for strict doctor dashboard routing.
+    const doctorHospitalName =
+      String(matchedDoctor?.hospitalName || '').trim() ||
+      String(detail?.name || '').trim()
+
+    const appointmentPreview = createAppointmentRecord(detail, form, doctorHospitalName)
+
+    const persistAppointmentToSupabase = async (appointmentRecord) => {
+      const { data: upsertedRow, error: upsertError } = await supabaseClient
+        .from('appointments')
+        .upsert(
+          {
+            id: appointmentRecord.id,
+            user_id: currentUser.id,
+            date: appointmentRecord.date,
+            time: appointmentRecord.time,
+            hospital: appointmentRecord.hospital,
+            patient_name: appointmentRecord.patientName || null,
+            phone: appointmentRecord.phone || null,
+            doctor: appointmentRecord.doctor || null,
+            specialty: appointmentRecord.specialty || null,
+            status: appointmentRecord.status || 'Pending',
+            notes: appointmentRecord.notes || null,
+            created_at: appointmentRecord.createdAt || new Date().toISOString(),
+          },
+          { onConflict: 'id' },
+        )
+        .select('*')
+        .maybeSingle()
+
+      if (upsertError) {
+        throw upsertError
+      }
+
+      if (!upsertedRow) {
+        return appointmentRecord
+      }
+
+      return {
+        id: upsertedRow.id,
+        userId: upsertedRow.user_id,
+        date: upsertedRow.date,
+        time: upsertedRow.time,
+        hospital: upsertedRow.hospital,
+        patientName: upsertedRow.patient_name || '',
+        phone: upsertedRow.phone || '',
+        doctor: upsertedRow.doctor || '',
+        specialty: upsertedRow.specialty || '',
+        status: upsertedRow.status || 'Pending',
+        approvalStatus: upsertedRow.approval_status || 'pending',
+        notes: upsertedRow.notes || '',
+        createdAt: upsertedRow.created_at,
+      }
+    }
+
     try {
-      const appointmentPreview = createAppointmentRecord(detail, form)
+
       const res = await fetch(apiUrl('/api/appointments'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           userId: currentUser.id,
-          detail,
+          detail: { ...detail, name: doctorHospitalName },
           form,
         }),
       })
@@ -1581,20 +1848,35 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
 
       const data = await res.json()
       const appointment = data.appointment || appointmentPreview
-      setAppointmentHistory((prev) => [appointment, ...prev])
+      const syncedAppointment = await persistAppointmentToSupabase(appointment).catch((syncError) => {
+        console.error('Supabase sync after backend booking failed:', syncError)
+        return appointment
+      })
+      setAppointmentHistory((prev) => [syncedAppointment, ...prev])
+      showAlert('Appointment Booked', 'Request saved and synced to Supabase successfully.')
       addHistoryItem({
-        key: `appointment-${appointment.id}`,
+        key: `appointment-${syncedAppointment.id}`,
         icon: '📅',
         title: 'Appointment booked',
-        note: `${detail.name} on ${appointment.date} at ${appointment.time}`,
+        note: `${detail.name} on ${syncedAppointment.date} at ${syncedAppointment.time}`,
       })
       setSelectedHospital(null)
       setActivePage('history')
       window.scrollTo({ top: 0, behavior: 'smooth' })
     } catch (error) {
       console.error('Appointment save failed:', error)
-      const fallbackAppointment = createAppointmentRecord(detail, form)
-      setAppointmentHistory((prev) => [fallbackAppointment, ...prev])
+
+      try {
+        const fallbackAppointment = await persistAppointmentToSupabase(appointmentPreview)
+
+        setAppointmentHistory((prev) => [fallbackAppointment, ...prev])
+        showAlert('Appointment Booked', 'Backend unavailable, but request is saved in Supabase.')
+      } catch (supabaseError) {
+        console.error('Supabase fallback save failed:', supabaseError)
+        setAppointmentHistory((prev) => [appointmentPreview, ...prev])
+        showAlert('Save Failed', 'Appointment could not be synced to Supabase right now. Please retry.')
+      }
+
       setSelectedHospital(null)
       setActivePage('history')
     }
@@ -3094,7 +3376,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                     Your details stay private and are saved locally on this device.
                   </div>
                   <div style={{ color: '#9de9d8', fontSize: '0.82rem', lineHeight: 1.6 }}>
-                    Unique ID: {profileMemberId || getFallbackMemberId(currentUser?.id)}
+                    Unique ID: {profileMemberId || getFallbackMemberId(profileDraft.fullName || fullName, currentUser?.id)}
                   </div>
                   <div style={{ color: '#9de9d8', fontSize: '0.82rem', lineHeight: 1.6 }}>
                     Password: {profileDraft.password ? 'Saved in profile' : 'Not set yet'}
@@ -3286,11 +3568,13 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                   <p className="h-address">Your appointment history will appear here once you book a visit.</p>
                 </div>
               ) : (
-                appointmentHistory.map((item) => (
+                appointmentHistory.map((item) => {
+                  const displayStatus = getAppointmentDisplayStatus(item)
+                  return (
                   <div key={item.id} className="hospital-card-dark">
                     <div className="h-top">
                       <div className="h-icon-box">🏥</div>
-                      <div className="h-rating">{item.status}</div>
+                      <div className="h-rating">{displayStatus}</div>
                     </div>
                     <h3>{item.hospital}</h3>
                     <p className="h-address">{item.doctor} • {item.specialty}</p>
@@ -3314,7 +3598,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                       </button>
                     </div>
                   </div>
-                ))
+                )})
               )}
             </div>
           </div>

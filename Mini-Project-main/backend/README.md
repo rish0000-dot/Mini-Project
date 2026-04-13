@@ -6,8 +6,6 @@ Main Express.js server handling all backend operations for the Healthcare Hub ap
 
 ```
 backend/
-├── db/                      # Database configuration and migrations
-│   └── schema.sql          # Supabase database schema (auth, profiles, documents)
 ├── data/                   # Local data persistence
 │   └── appointments.json   # Patient appointments (JSON file store)
 ├── utils/                  # Utility modules
@@ -17,6 +15,8 @@ backend/
 ├── package.json            # Dependencies and scripts
 └── .env.example            # Environment variables template
 ```
+
+Database schema and SQL migrations now live in `../database/`.
 
 ## Getting Started
 

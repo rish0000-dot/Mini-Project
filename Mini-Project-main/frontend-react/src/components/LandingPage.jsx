@@ -28,6 +28,45 @@ const tabPanels = [
   },
 ]
 
+const dashboardFeaturePreview = [
+  {
+    label: 'Search',
+    title: 'Live Hospital Search',
+    desc: 'Location-aware results with filters, ratings, and direct directions in one flow.',
+    status: 'Real-time',
+  },
+  {
+    label: 'Smart Assist',
+    title: 'AI Triage + Fit Match',
+    desc: 'Symptom urgency score, recommendations, and personalized hospital matching.',
+    status: 'AI Powered',
+  },
+  {
+    label: 'Emergency',
+    title: 'Emergency Priority Mode',
+    desc: 'Fast emergency-first shortlist based on distance, readiness, and priority score.',
+    status: 'Critical Ready',
+  },
+  {
+    label: 'AI',
+    title: 'Persistent AI Chat',
+    desc: 'Health assistant with chat history, quick prompts, and context-aware responses.',
+    status: '24 x 7',
+  },
+  {
+    label: 'Documents',
+    title: 'Document Vault',
+    desc: 'Upload, organize by date, batch download, replace, and secure history tracking.',
+    status: 'Secure',
+  },
+  {
+    label: 'Profile',
+    title: 'Profile + Unique ID',
+    desc: 'Editable profile, saved password sync, and unique member ID generation.',
+    status: 'Personalized',
+  },
+]
+
 function LandingPage({ navScrolled, onShowAuth, currentUser, onContinueToDashboard }) {
   const [activeTab, setActiveTab] = React.useState(0)
   const [typedText, setTypedText] = React.useState('EXCELLENCE.')
@@ -177,6 +216,7 @@ function LandingPage({ navScrolled, onShowAuth, currentUser, onContinueToDashboa
         <a href="#" className="v2-logo">Healthcare<span>Hub</span></a>
         <div className="v2-links">
           <a href="#features" className="v2-link">Features</a>
+          <a href="#inside-dashboard" className="v2-link">Dashboard Preview</a>
           <a href="#how" className="v2-link">How It Works</a>
           <a href="#about" className="v2-link">About</a>
           <button className="v2-link" onClick={handleSecondaryAction}>{hasSessionUser ? 'Open Dashboard' : 'Login'}</button>
@@ -262,6 +302,33 @@ function LandingPage({ navScrolled, onShowAuth, currentUser, onContinueToDashboa
                 <button className="feat-arrow" onClick={handlePrimaryAction}>Explore <span>→</span></button>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="section inside-dashboard" id="inside-dashboard">
+        <div className="section-inner">
+          <div className="centered">
+            <span className="sec-label">Inside Experience</span>
+            <h2 className="sec-title">What You Get In Dashboard</h2>
+            <div className="divider"></div>
+            <p className="sec-sub">Before signup, explore a virtual snapshot of all major tools available after login.</p>
+          </div>
+
+          <div className="inside-grid">
+            {dashboardFeaturePreview.map((feature) => (
+              <article className="inside-card reveal" key={feature.title}>
+                <div className="inside-card-top">
+                  <span className="inside-pill">{feature.label}</span>
+                  <span className="inside-status">{feature.status}</span>
+                </div>
+                <h3 className="inside-title">{feature.title}</h3>
+                <p className="inside-desc">{feature.desc}</p>
+                <button className="inside-link" onClick={handlePrimaryAction}>
+                  {hasSessionUser ? 'Open Feature' : 'Unlock In Dashboard'}
+                </button>
+              </article>
+            ))}
           </div>
         </div>
       </section>

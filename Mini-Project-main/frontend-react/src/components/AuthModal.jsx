@@ -193,6 +193,36 @@ const STYLES = `
 }
 .form-subtitle { color: var(--auth-muted); font-size: .88rem; margin-bottom: 28px; line-height: 1.6; }
 
+.auth-segment-wrap { margin-bottom: 18px; }
+.auth-segment-label {
+  font-size: .72rem;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--auth-muted);
+  margin-bottom: 8px;
+  display: block;
+}
+.auth-segment {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--auth-input-border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.auth-segment.account-type { grid-template-columns: 1fr 1fr 1fr; }
+.auth-segment-btn {
+  padding: 10px 12px;
+  font-size: .83rem;
+  font-weight: 600;
+  color: var(--auth-muted);
+  background: rgba(255,255,255,0.03);
+  cursor: pointer;
+  transition: all .25s ease;
+}
+.auth-segment-btn.active {
+  color: #04131f;
+  background: linear-gradient(135deg, #00e5ff, #5ce7ff);
+}
 .input-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 0; }
 .inp-group { margin-bottom: 16px; }
 .inp-label {
@@ -407,7 +437,7 @@ function ParticleCanvas({ canvasRef }) {
   return <canvas ref={canvasRef} className="auth-canvas" style={{ width: '100%', height: '100%' }} />
 }
 
-export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMode, authError, setAuthError, onAuthSuccess }) {
+export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMode, authRole = 'user', setAuthRole = () => {}, authError, setAuthError, onAuthSuccess }) {
   const [firstName, setFirstName] = useState('')
   const [lastName, setLastName] = useState('')
   const [email, setEmail] = useState('')
@@ -417,6 +447,7 @@ export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMo
   const [isLoading, setIsLoading] = useState(false)
   const [successMessage, setSuccessMessage] = useState('')
   const [showSuccess, setShowSuccess] = useState(false)
+  const [canContinueAfterSuccess, setCanContinueAfterSuccess] = useState(false)
   const canvasRef = useRef(null)
   const overlayRef = useRef(null)
 
@@ -430,7 +461,7 @@ export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMo
   const resetForm = () => {
     setFirstName(''); setLastName(''); setEmail('')
     setPassword(''); setAgreeTerms(false); setShowPassword(false)
-    setAuthError(''); setSuccessMessage(''); setShowSuccess(false)
+    setAuthError(''); setSuccessMessage(''); setShowSuccess(false); setCanContinueAfterSuccess(false)
   }
 
   useEffect(() => {
@@ -447,25 +478,116 @@ export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMo
 
   const handleSubmit = async (e) => {
     e.preventDefault()
+    if (isSignUpMode && authRole === 'admin') {
+      setAuthError('Admin signup is disabled. Please use an existing admin account to login.')
+      return
+    }
     if (isSignUpMode && !agreeTerms) { setAuthError('Please agree to the terms.'); return }
     setIsLoading(true); setAuthError('')
     try {
       let result
+      const normalizedRole = authRole === 'doctor' ? 'doctor' : authRole === 'admin' ? 'admin' : 'user'
       if (isSignUpMode) {
         result = await supabaseClient.auth.signUp({
           email, password,
-          options: { data: { first_name: firstName, last_name: lastName, full_name: `${firstName} ${lastName}` } }
+          options: {
+            data: {
+              first_name: firstName,
+              last_name: lastName,
+              full_name: `${firstName} ${lastName}`,
+              role: normalizedRole,
+              account_type: normalizedRole,
+              hospital_name: null,
+              specialization: null,
+              license_number: null,
+              qualification: null,
+              experience_years: null,
+              doctor_profile_completed: normalizedRole === 'doctor' ? false : true,
+              verification_status: normalizedRole === 'doctor' ? 'profile_incomplete' : 'verified',
+            },
+          }
         })
         if (result.error) throw result.error
         if (result.data.user && !result.data.session) {
           setSuccessMessage('Check your email to confirm your account!')
+          setCanContinueAfterSuccess(false)
           setShowSuccess(true); return
         }
-        setSuccessMessage('Account created successfully!')
+        setCanContinueAfterSuccess(true)
+        setSuccessMessage(`${normalizedRole === 'doctor' ? 'Doctor' : 'User'} account created successfully!`)
       } else {
-        result = await supabaseClient.auth.signInWithPassword({ email, password })
-        if (result.error) throw result.error
-        setSuccessMessage('Welcome back!')
+        if (normalizedRole === 'admin') {
+          if (email.trim().toLowerCase() !== 'admin@gmail.com' || password !== 'admin123') {
+            throw new Error('Invalid admin credentials.')
+          }
+          result = await supabaseClient.auth.signInWithPassword({ email, password })
+
+          const invalidLogin = /invalid login credentials/i.test(String(result?.error?.message || ''))
+          if (result.error && invalidLogin) {
+            const signUpResult = await supabaseClient.auth.signUp({
+              email,
+              password,
+              options: {
+                data: {
+                  first_name: 'System',
+                  last_name: 'Admin',
+                  full_name: 'System Admin',
+                  role: 'admin',
+                  account_type: 'admin',
+                  doctor_profile_completed: true,
+                  verification_status: 'verified',
+                },
+                emailRedirectTo: window.location.origin,
+              },
+            })
+
+            if (signUpResult.error) throw signUpResult.error
+            result = await supabaseClient.auth.signInWithPassword({ email, password })
+          }
+
+          if (result.error) throw result.error
+
+          const { error: metaError } = await supabaseClient.auth.updateUser({
+            data: {
+              role: 'admin',
+              account_type: 'admin',
+              full_name: 'System Admin',
+            },
+          })
+          if (metaError) throw metaError
+
+          setCanContinueAfterSuccess(true)
+          setSuccessMessage('Welcome Admin!')
+        } else {
+          result = await supabaseClient.auth.signInWithPassword({ email, password })
+          if (result.error) throw result.error
+          setCanContinueAfterSuccess(true)
+
+          const signedInRole =
+            result?.data?.user?.user_metadata?.role ||
+            result?.data?.user?.user_metadata?.account_type ||
+            'user'
+
+          if (normalizedRole === 'doctor' && signedInRole !== 'doctor') {
+            throw new Error('This account is not registered as doctor. Please use correct login type.')
+          }
+
+          if (normalizedRole === 'admin' && signedInRole !== 'admin') {
+            throw new Error('This account is not an admin account.')
+          }
+
+          if (normalizedRole === 'user' && signedInRole !== 'user') {
+            throw new Error('This account is not a user account. Please use correct login type.')
+          }
+
+          setSuccessMessage(
+            normalizedRole === 'doctor'
+              ? 'Welcome Doctor!'
+              : normalizedRole === 'admin'
+                ? 'Welcome Admin!'
+                : 'Welcome back!',
+          )
+        }
       }
       setShowSuccess(true)
       setTimeout(() => { onAuthSuccess() }, 1800)
@@ -571,8 +693,12 @@ export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMo
                   <span className="success-icon">{isSignUpMode ? '🚀' : '🎉'}</span>
                   <h3 className="success-h">{isSignUpMode ? "You're all set!" : "You're in!"}</h3>
                   <p className="success-p">{successMessage}</p>
-                  <button type="button" className="auth-submit" onClick={isSignUpMode ? onClose : onAuthSuccess}>
-                    {isSignUpMode ? "Let's Go →" : 'Continue to Dashboard →'}
+                  <button
+                    type="button"
+                    className="auth-submit"
+                    onClick={canContinueAfterSuccess ? onAuthSuccess : onClose}
+                  >
+                    {canContinueAfterSuccess ? 'Continue to Dashboard →' : 'Close'}
                   </button>
                 </div>
               ) : (
@@ -581,9 +707,28 @@ export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMo
                   <h2 className="form-title">{isSignUpMode ? 'Create Account' : 'Welcome Back'}</h2>
                   <p className="form-subtitle">
                     {isSignUpMode
-                      ? 'Join 500K+ users managing their health smarter.'
-                      : 'Sign in to your account and continue your health journey.'}
+                      ? `Create your ${authRole === 'doctor' ? 'Doctor' : authRole === 'admin' ? 'Admin' : 'User'} account to continue.`
+                      : `Sign in with your ${authRole === 'doctor' ? 'Doctor' : authRole === 'admin' ? 'Admin' : 'User'} account.`}
                   </p>
+
+                  <div className="auth-segment-wrap">
+                    <span className="auth-segment-label">Account Type</span>
+                    <div className="auth-segment account-type">
+                      <button type="button" className={`auth-segment-btn ${authRole === 'user' ? 'active' : ''}`} onClick={() => setAuthRole('user')}>User</button>
+                      <button type="button" className={`auth-segment-btn ${authRole === 'doctor' ? 'active' : ''}`} onClick={() => setAuthRole('doctor')}>Doctor</button>
+                      <button type="button" className={`auth-segment-btn ${authRole === 'admin' ? 'active' : ''}`} onClick={() => { setAuthRole('admin'); setIsSignUpMode(false); }}>Admin</button>
+                    </div>
+                  </div>
+
+                  <div className="auth-segment-wrap">
+                    <span className="auth-segment-label">Access Mode</span>
+                    <div className="auth-segment">
+                      <button type="button" className={`auth-segment-btn ${!isSignUpMode ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); resetForm(); setIsSignUpMode(false) }}>Login</button>
+                      {authRole !== 'admin' && (
+                        <button type="button" className={`auth-segment-btn ${isSignUpMode ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); resetForm(); setIsSignUpMode(true) }}>Sign Up</button>
+                      )}
+                    </div>
+                  </div>
 
                   {authError && <div className="auth-error"><span>⚠️</span>{authError}</div>}
 
@@ -634,6 +779,11 @@ export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMo
                           value={email} onChange={e => setEmail(e.target.value)} required />
                         <span className="inp-icon">✉️</span>
                       </div>
+                      {authRole === 'admin' && !isSignUpMode && (
+                        <div style={{ marginTop: '8px', fontSize: '.76rem', color: 'var(--auth-muted)' }}>
+                          Use admin@gmail.com / admin123
+                        </div>
+                      )}
                     </div>
 
                     <div className="inp-group">
@@ -663,31 +813,39 @@ export default function AuthModal({ isOpen, onClose, isSignUpMode, setIsSignUpMo
 
                     <button type="submit" className="auth-submit" disabled={isLoading}>
                       {isLoading
-                        ? <><span className="btn-spinner" />{isSignUpMode ? 'Creating account...' : 'Signing in...'}</>
-                        : (isSignUpMode ? 'Create Free Account 🚀' : 'Sign In →')}
+                        ? <><span className="btn-spinner" />{isSignUpMode ? `Creating ${authRole} account...` : `Signing in as ${authRole}...`}</>
+                        : (isSignUpMode
+                          ? `Create ${authRole === 'doctor' ? 'Doctor' : authRole === 'admin' ? 'Admin' : 'User'} Account 🚀`
+                          : `Sign In as ${authRole === 'doctor' ? 'Doctor' : authRole === 'admin' ? 'Admin' : 'User'} →`)}
                     </button>
                   </form>
 
-                  <div className="auth-divider">
-                    <div className="auth-divider-line" /><span className="auth-divider-txt">OR</span><div className="auth-divider-line" />
-                  </div>
+                  {authRole !== 'admin' && (
+                    <>
+                      <div className="auth-divider">
+                        <div className="auth-divider-line" /><span className="auth-divider-txt">OR</span><div className="auth-divider-line" />
+                      </div>
 
-                  <button type="button" className="google-btn" onClick={handleGoogle}>
-                    <svg className="google-icon" viewBox="0 0 24 24">
-                      <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
-                      <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
-                      <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
-                      <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
-                    </svg>
-                    Continue with Google
-                  </button>
+                      <button type="button" className="google-btn" onClick={handleGoogle}>
+                        <svg className="google-icon" viewBox="0 0 24 24">
+                          <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+                          <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+                          <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+                          <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                        </svg>
+                        Continue with Google
+                      </button>
+                    </>
+                  )}
 
-                  <div className="auth-switch">
-                    {isSignUpMode ? 'Already have an account? ' : "Don't have an account? "}
-                    <button type="button" className="switch-btn" onClick={handleSwitchMode}>
-                      {isSignUpMode ? 'Sign In →' : 'Sign Up Free ✨'}
-                    </button>
-                  </div>
+                  {authRole !== 'admin' && (
+                    <div className="auth-switch">
+                      {isSignUpMode ? 'Already have an account? ' : "Don't have an account? "}
+                      <button type="button" className="switch-btn" onClick={handleSwitchMode}>
+                        {isSignUpMode ? 'Sign In →' : 'Sign Up Free ✨'}
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
             </div>

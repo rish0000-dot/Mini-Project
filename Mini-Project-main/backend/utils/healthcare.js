@@ -825,7 +825,8 @@ const createAppointmentRecord = ({ detail, form, userId }) => ({
   email: form.email || '',
   doctor: form.doctor,
   specialty: form.service || form.specialty,
-  status: 'Upcoming',
+  status: 'Pending',
+  approvalStatus: 'pending',
   notes: form.notes || `Booked through ${detail.name}.`,
   createdAt: new Date().toISOString(),
 })
