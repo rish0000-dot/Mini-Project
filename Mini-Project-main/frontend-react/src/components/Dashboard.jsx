@@ -4015,6 +4015,7 @@ function Dashboard({ currentUser, activePage, setActivePage, activeFilter, setAc
                     <div className="h-bottom">
                       <span className="h-distance">🎯 Fit shortlist</span>
                       <button className="h-dir-btn" onClick={() => handleShowDirections(hospital)}>Directions</button>
+                      <button className="h-dir-btn" onClick={() => openHospitalDetail(hospital, 'smart-assist')}>View Details</button>
                     </div>
                   </div>
                 )
