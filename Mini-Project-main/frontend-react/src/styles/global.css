@@ -2554,42 +2554,7 @@ input.dark-input[type='number']::-webkit-inner-spin-button {
     background: rgba(0,212,170,0.15) !important;
 }
 
-/* ── CUSTOM CURSOR ── */
-#cur {
-    width: 36px;
-    height: 36px;
-    border: 2px solid var(--yellow);
-    border-radius: 50%;
-    position: fixed;
-    pointer-events: none;
-    z-index: 9999;
-    transform: translate(-50%, -50%);
-    transition: width .2s, height .2s, border-color .2s;
-    mix-blend-mode: difference;
-}
-
-#cur-dot {
-    width: 5px;
-    height: 5px;
-    background: var(--yellow);
-    border-radius: 50%;
-    position: fixed;
-    pointer-events: none;
-    z-index: 9999;
-    transform: translate(-50%, -50%);
-}
-
-/* Hover effect - jab link/button par cursor jaaye */
-body:has(a:hover) #cur,
-body:has(button:hover) #cur {
-    width: 52px;
-    height: 52px;
-    border-color: var(--orange);
-}
-
-a, button, [onclick], [role="button"] {
-    cursor: none;
-}
+/* Custom cursor removed */
 
 /* Map Container Animations */
 .map-container-enhanced {
