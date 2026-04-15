@@ -317,12 +317,13 @@ const CircleAlertIcon = () => (
 )
 
 // ── Data ──────────────────────────────────────────────────────────────────
-const NAV_ITEMS = [
+// NAV_ITEMS ko function bana diya hai taki dynamic badge count aa sake
+const getNavItems = (pendingCount, emergencyCount) => [
     { key: 'dashboard', label: 'Dashboard', Icon: GridIcon },
-    { key: 'appointments', label: 'Appointments', Icon: CalIcon, badge: '24' },
+    { key: 'appointments', label: 'Appointments', Icon: CalIcon, badge: pendingCount > 0 ? pendingCount : null },
     { key: 'patients', label: 'Patients', Icon: HeartIcon },
     { key: 'records', label: 'Records', Icon: FileIcon },
-    { key: 'emergency', label: 'Emergency', Icon: AlertTriIcon, badge: '3' },
+    { key: 'emergency', label: 'Emergency', Icon: AlertTriIcon, badge: emergencyCount > 0 ? emergencyCount : null },
     { key: 'ai', label: 'AI Assistant', Icon: BotIcon },
     { key: 'profile', label: 'Profile', Icon: UserIcon },
 ]
@@ -400,9 +401,66 @@ const getInitialsFromText = (value = '') =>
 
 // ── Component ─────────────────────────────────────────────────────────────
 export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () => { } }) {
-    const [activeTab, setActiveTab] = useState('dashboard')
+    // Move meta and profileRow state above all useEffect hooks that use them
     const [meta, setMeta] = useState(currentUser?.user_metadata || {})
     const [profileRow, setProfileRow] = useState(null)
+    const [activeTab, setActiveTab] = useState('dashboard')
+
+    // Patients state
+    const [patients, setPatients] = useState([]);
+    const [patientsLoading, setPatientsLoading] = useState(false);
+    const [patientSearch, setPatientSearch] = useState("");
+    const [filteredPatients, setFilteredPatients] = useState([]);
+
+    // Load patients for this doctor
+    useEffect(() => {
+        if (activeTab !== "patients") return;
+        const fetchPatients = async () => {
+            setPatientsLoading(true);
+            try {
+                // API: /api/patients?doctorName=...&hospitalName=...
+                const doctorNameRaw = profileRow?.name || meta.name || "";
+                const hospitalNameRaw = profileRow?.hospital_name || meta.hospital_name || meta.hospital || "";
+                if (!doctorNameRaw || !hospitalNameRaw) {
+                    setPatients([]);
+                    setFilteredPatients([]);
+                    setPatientsLoading(false);
+                    return;
+                }
+                const doctorName = normalizeDoctorName(doctorNameRaw);
+                const hospitalName = normalizeHospitalName(hospitalNameRaw);
+                const res = await fetch(apiUrl(`/api/patients?doctorName=${encodeURIComponent(doctorName)}&hospitalName=${encodeURIComponent(hospitalName)}`));
+                if (!res.ok) throw new Error("Failed to fetch patients");
+                const data = await res.json();
+                const list = Array.isArray(data.patients) ? data.patients : [];
+                setPatients(list);
+                setFilteredPatients(list);
+            } catch (e) {
+                setPatients([]);
+                setFilteredPatients([]);
+            } finally {
+                setPatientsLoading(false);
+            }
+        };
+        fetchPatients();
+    }, [activeTab, profileRow, meta]);
+
+    // Patient search filter
+    useEffect(() => {
+        if (!patientSearch.trim()) {
+            setFilteredPatients(patients);
+        } else {
+            const q = patientSearch.trim().toLowerCase();
+            setFilteredPatients(
+                patients.filter(
+                    (p) =>
+                        (p.name && p.name.toLowerCase().includes(q)) ||
+                        (p.email && p.email.toLowerCase().includes(q)) ||
+                        (p.phone && String(p.phone).includes(q))
+                )
+            );
+        }
+    }, [patientSearch, patients]);
     const [formState, setFormState] = useState({
         specialization: '',
         license_number: '',
@@ -926,6 +984,12 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
         }
     }
 
+    // Emergency count nikalne ka logic: emergency appointments filter karo
+    const emergencyCount = allAppointments.filter(
+        (apt) => String(apt.specialty || '').toLowerCase().includes('emerg')
+    ).length;
+    const navItems = getNavItems(pendingAppointments.length, emergencyCount);
+
     return (
         <>
             <style dangerouslySetInnerHTML={{ __html: CSS }} />
@@ -945,7 +1009,7 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
                     </div>
                     <nav className="dp-nav">
                         <span className="dp-nav-section">Main</span>
-                        {NAV_ITEMS.map(({ key, label, Icon: NI, badge }) => (
+                        {navItems.map(({ key, label, Icon: NI, badge }) => (
                             <button
                                 key={key}
                                 type="button"
@@ -953,7 +1017,7 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
                                 onClick={() => setActiveTab(key)}
                             >
                                 <NI />{label}
-                                {badge && <span className="dp-nav-badge">{badge}</span>}
+                                {badge ? <span className="dp-nav-badge">{badge}</span> : null}
                             </button>
                         ))}
                     </nav>
@@ -1005,7 +1069,39 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
                             </div>
                         )}
 
-                        {activeTab === 'profile' ? (
+                        {activeTab === 'patients' ? (
+                            <div className="dp-card">
+                                <div className="dp-section-heading">
+                                    <h2 className="dp-section-title">Patients</h2>
+                                </div>
+                                <input
+                                    className="dark-input"
+                                    style={{ marginBottom: 18, width: "100%", maxWidth: 400 }}
+                                    type="text"
+                                    placeholder="Search by name, email, phone..."
+                                    value={patientSearch}
+                                    onChange={e => setPatientSearch(e.target.value)}
+                                />
+                                {patientsLoading ? (
+                                    <div style={{ color: '#7a8ba7', padding: 30 }}>Loading patients...</div>
+                                ) : filteredPatients.length === 0 ? (
+                                    <div style={{ color: '#ffb4b4', padding: 30 }}>No patients found.</div>
+                                ) : (
+                                    <div className="dp-patient-list">
+                                        {filteredPatients.map((p, idx) => (
+                                            <div className="dp-patient-row" key={p.id || idx}>
+                                                <div className="dp-pt-avatar" style={{ background: '#0cb8a033', color: '#0cb8a0' }}>{getInitialsFromText(p.name || p.email || p.phone)}</div>
+                                                <div className="dp-pt-info">
+                                                    <div className="dp-pt-name">{p.name || 'Unknown'}</div>
+                                                    <div className="dp-pt-sub">{p.email || p.phone || ''}</div>
+                                                </div>
+                                                <div className="dp-pt-status ps-in">Active</div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        ) : activeTab === 'profile' ? (
                             <div className="dp-profile-wrap">
                                 <div className="dp-profile-card">
                                     <div className="dp-profile-avatar-wrap">
