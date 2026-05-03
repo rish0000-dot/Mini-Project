@@ -1,4 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react'
+import JSZip from 'jszip'
+import { saveAs } from 'file-saver'
+import { Eye, Download, Archive } from 'lucide-react'
 import { supabaseClient } from '../utils/supabase'
 import { apiUrl } from '../utils/api'
 import {
@@ -179,6 +182,8 @@ const CSS = `
 .dp-field label{font-size:11px;color:var(--tm);font-weight:700;letter-spacing:.5px;text-transform:uppercase;}
 .dp-field input,.dp-field select{height:42px;border-radius:10px;border:1px solid var(--b);background:var(--s2);color:var(--tp);padding:0 12px;font-size:13px;font-family:var(--fb);}
 .dp-field input:focus,.dp-field select:focus{outline:none;border-color:var(--teal-glow);box-shadow:0 0 0 3px rgba(12,184,160,.15);}
+.dark-input{height:42px;border-radius:10px;border:1px solid var(--b);background:var(--s2);color:var(--tp);padding:0 12px;font-size:13px;font-family:var(--fb);transition:all var(--tr);}
+.dark-input:focus{outline:none;border-color:var(--teal-glow);box-shadow:0 0 0 3px rgba(12,184,160,.15);background:var(--s3);}
 .dp-combobox{position:relative;}
 .dp-combobox-input{width:100%;}
 .dp-combobox-menu{position:absolute;left:0;right:0;top:calc(100% + 8px);z-index:20;max-height:500px;overflow-y:auto;overflow-x:hidden;padding:8px;background:linear-gradient(180deg,#142234,#0d1724);border:1px solid rgba(255,255,255,.1);border-radius:14px;box-shadow:0 20px 50px rgba(0,0,0,.45);display:flex;flex-direction:column;gap:6px;}
@@ -322,7 +327,6 @@ const getNavItems = (pendingCount, emergencyCount) => [
     { key: 'dashboard', label: 'Dashboard', Icon: GridIcon },
     { key: 'appointments', label: 'Appointments', Icon: CalIcon, badge: pendingCount > 0 ? pendingCount : null },
     { key: 'patients', label: 'Patients', Icon: HeartIcon },
-    { key: 'records', label: 'Records', Icon: FileIcon },
     { key: 'emergency', label: 'Emergency', Icon: AlertTriIcon, badge: emergencyCount > 0 ? emergencyCount : null },
     { key: 'ai', label: 'AI Assistant', Icon: BotIcon },
     { key: 'profile', label: 'Profile', Icon: UserIcon },
@@ -412,6 +416,13 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
     const [patientSearch, setPatientSearch] = useState("");
     const [filteredPatients, setFilteredPatients] = useState([]);
 
+    // Records state
+    const [recordsSearchQuery, setRecordsSearchQuery] = useState("");
+    const [recordsSearchResult, setRecordsSearchResult] = useState(null);
+    const [isSearchingRecords, setIsSearchingRecords] = useState(false);
+    const [recordsSearchError, setRecordsSearchError] = useState("");
+    const [selectedDocumentDate, setSelectedDocumentDate] = useState(null)
+
     // Load patients for this doctor
     useEffect(() => {
         if (activeTab !== "patients") return;
@@ -444,6 +455,34 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
         };
         fetchPatients();
     }, [activeTab, profileRow, meta]);
+
+    const documentsByDate = useMemo(() => {
+        if (!recordsSearchResult?.documents) return {}
+        return recordsSearchResult.documents.reduce((groups, doc) => {
+            const dateKey = new Date(doc.upload_date || doc.created_at).toLocaleDateString('en-GB', {
+                day: 'numeric',
+                month: 'long',
+                year: 'numeric',
+            })
+            groups[dateKey] = groups[dateKey] || {}
+            
+            const sessionId = doc.group_id || doc.sessionId || 'single'
+            groups[dateKey][sessionId] = groups[dateKey][sessionId] || []
+            groups[dateKey][sessionId].push(doc)
+            return groups
+        }, {})
+    }, [recordsSearchResult])
+
+    const documentDates = useMemo(() => 
+        Object.keys(documentsByDate).sort((a, b) => new Date(b) - new Date(a)), 
+        [documentsByDate]
+    )
+
+    useEffect(() => {
+        if (documentDates.length > 0 && !selectedDocumentDate) {
+            setSelectedDocumentDate(documentDates[0])
+        }
+    }, [documentDates, selectedDocumentDate])
 
     // Patient search filter
     useEffect(() => {
@@ -601,6 +640,55 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
             isMounted = false
         }
     }, [showProfileModal, isEditingProfile])
+
+    const handleDownloadDocument = async (doc) => {
+        try {
+            const response = await fetch(doc.file_url)
+            const blob = await response.blob()
+            const downloadUrl = window.URL.createObjectURL(blob)
+            const link = document.createElement('a')
+            link.href = downloadUrl
+            link.download = doc.title || 'document'
+            document.body.appendChild(link)
+            link.click()
+            link.remove()
+            window.URL.revokeObjectURL(downloadUrl)
+        } catch (error) {
+            console.error('Download failed:', error)
+            window.open(doc.file_url, '_blank')
+        }
+    }
+
+    const handleDownloadBatch = async (docs, dateKey) => {
+        if (!docs || !docs.length) return
+        
+        try {
+            const zip = new JSZip()
+            const folderName = `Medical_Records_${dateKey.replace(/\s+/g, '_')}`
+            const folder = zip.folder(folderName)
+
+            for (const doc of docs) {
+                try {
+                    const response = await fetch(doc.file_url)
+                    const blob = await response.blob()
+                    // Use title or a unique name for the file in ZIP
+                    const fileName = doc.title || `doc_${Math.random().toString(36).slice(2, 7)}`
+                    folder.file(fileName, blob)
+                } catch (err) {
+                    console.error(`Failed to add file ${doc.title} to zip:`, err)
+                }
+            }
+
+            const content = await zip.generateAsync({ type: 'blob' })
+            saveAs(content, `${folderName}.zip`)
+        } catch (error) {
+            console.error('Batch download failed:', error)
+            alert('Failed to create ZIP file. Trying individual downloads...')
+            for (const doc of docs) {
+                await handleDownloadDocument(doc)
+            }
+        }
+    }
 
     useEffect(() => {
         if (activeTab !== 'appointments') return
@@ -863,6 +951,32 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
         }
     }
 
+    const handleRecordsSearch = async (e) => {
+        if (e) e.preventDefault();
+        const query = recordsSearchQuery.trim();
+        if (!query) return;
+
+        setIsSearchingRecords(true);
+        setRecordsSearchError("");
+        setRecordsSearchResult(null);
+
+        try {
+            const res = await fetch(apiUrl(`/api/records/patient/${encodeURIComponent(query)}`));
+            if (!res.ok) {
+                if (res.status === 404) {
+                    throw new Error("Patient not found with this ID.");
+                }
+                throw new Error("Failed to fetch patient records.");
+            }
+            const data = await res.json();
+            setRecordsSearchResult(data);
+        } catch (error) {
+            setRecordsSearchError(error.message);
+        } finally {
+            setIsSearchingRecords(false);
+        }
+    };
+
     const handleProfileSubmit = async (event) => {
         event.preventDefault()
         const specialization = formState.specialization.trim()
@@ -1072,32 +1186,261 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
                         {activeTab === 'patients' ? (
                             <div className="dp-card">
                                 <div className="dp-section-heading">
-                                    <h2 className="dp-section-title">Patients</h2>
+                                    <h2 className="dp-section-title">Patient Records Search</h2>
                                 </div>
-                                <input
-                                    className="dark-input"
-                                    style={{ marginBottom: 18, width: "100%", maxWidth: 400 }}
-                                    type="text"
-                                    placeholder="Search by name, email, phone..."
-                                    value={patientSearch}
-                                    onChange={e => setPatientSearch(e.target.value)}
-                                />
-                                {patientsLoading ? (
-                                    <div style={{ color: '#7a8ba7', padding: 30 }}>Loading patients...</div>
-                                ) : filteredPatients.length === 0 ? (
-                                    <div style={{ color: '#ffb4b4', padding: 30 }}>No patients found.</div>
-                                ) : (
-                                    <div className="dp-patient-list">
-                                        {filteredPatients.map((p, idx) => (
-                                            <div className="dp-patient-row" key={p.id || idx}>
-                                                <div className="dp-pt-avatar" style={{ background: '#0cb8a033', color: '#0cb8a0' }}>{getInitialsFromText(p.name || p.email || p.phone)}</div>
-                                                <div className="dp-pt-info">
-                                                    <div className="dp-pt-name">{p.name || 'Unknown'}</div>
-                                                    <div className="dp-pt-sub">{p.email || p.phone || ''}</div>
+                                <form onSubmit={handleRecordsSearch} style={{ display: 'flex', gap: '10px', marginBottom: '24px' }}>
+                                    <input
+                                        className="dark-input"
+                                        style={{ flex: 1, maxWidth: '400px' }}
+                                        type="text"
+                                        placeholder="Enter Patient ID (e.g. alok@8212)"
+                                        value={recordsSearchQuery}
+                                        onChange={e => setRecordsSearchQuery(e.target.value)}
+                                    />
+                                    <button 
+                                        type="submit" 
+                                        className="dp-modal-btn" 
+                                        disabled={isSearchingRecords || !recordsSearchQuery.trim()}
+                                        style={{ height: '42px' }}
+                                    >
+                                        {isSearchingRecords ? 'Searching...' : 'Search Patient'}
+                                    </button>
+                                </form>
+
+                                {recordsSearchError && (
+                                    <div style={{ color: '#ff6b6b', padding: '10px 0', fontSize: '14px' }}>
+                                        {recordsSearchError}
+                                    </div>
+                                )}
+
+                                {recordsSearchResult && (
+                                    <div style={{ animation: 'slideUp 0.4s ease both' }}>
+                                        <div style={{ 
+                                            background: 'var(--s2)', 
+                                            padding: '20px', 
+                                            borderRadius: '12px', 
+                                            border: '1px solid var(--b)',
+                                            marginBottom: '20px'
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '15px' }}>
+                                                <div className="dp-pt-avatar" style={{ 
+                                                    width: '50px', 
+                                                    height: '50px', 
+                                                    fontSize: '18px',
+                                                    background: 'var(--teal-dim)',
+                                                    color: 'var(--teal)'
+                                                }}>
+                                                    {getInitialsFromText(recordsSearchResult.patient.name)}
                                                 </div>
-                                                <div className="dp-pt-status ps-in">Active</div>
+                                                <div>
+                                                    <div style={{ fontSize: '18px', fontWeight: '600', color: 'var(--tp)' }}>
+                                                        {recordsSearchResult.patient.name}
+                                                    </div>
+                                                    <div style={{ fontSize: '14px', color: 'var(--ts)', marginTop: '2px' }}>
+                                                        Patient ID: <span style={{ color: 'var(--teal)', fontWeight: '500' }}>{recordsSearchResult.patient.memberId}</span>
+                                                    </div>
+                                                </div>
                                             </div>
-                                        ))}
+                                        </div>
+
+                                        {recordsSearchResult.documents.length === 0 ? (
+                                            <div style={{ color: 'var(--tm)', padding: '20px 0' }}>
+                                                No documents uploaded by this patient.
+                                            </div>
+                                        ) : (
+                                            <div style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: '20px', marginTop: '20px' }}>
+                                                {/* DATE SIDEBAR */}
+                                                <aside style={{ display: 'flex', flexDirection: 'column', gap: '8px', borderRight: '1px solid var(--b)', paddingRight: '16px' }}>
+                                                    <div style={{ fontSize: '11px', fontWeight: '700', color: 'var(--tm)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '8px' }}>
+                                                        Upload Dates
+                                                    </div>
+                                                    {documentDates.map(date => (
+                                                        <button
+                                                            key={date}
+                                                            onClick={() => setSelectedDocumentDate(date)}
+                                                            style={{
+                                                                padding: '10px 14px',
+                                                                borderRadius: '8px',
+                                                                border: '1px solid',
+                                                                borderColor: selectedDocumentDate === date ? 'var(--teal-glow)' : 'transparent',
+                                                                background: selectedDocumentDate === date ? 'var(--teal-dim)' : 'transparent',
+                                                                color: selectedDocumentDate === date ? 'var(--teal)' : 'var(--ts)',
+                                                                fontSize: '13px',
+                                                                fontWeight: '500',
+                                                                textAlign: 'left',
+                                                                cursor: 'pointer',
+                                                                transition: 'all 0.2s ease'
+                                                            }}
+                                                        >
+                                                            {date}
+                                                        </button>
+                                                    ))}
+                                                </aside>
+
+                                                {/* DOCUMENT CONTENT */}
+                                                <main>
+                                                    <div style={{ display: 'grid', gap: '24px' }}>
+                                                        {selectedDocumentDate && documentsByDate[selectedDocumentDate] && 
+                                                            Object.entries(documentsByDate[selectedDocumentDate]).map(([sessionId, docs]) => (
+                                                                <div key={sessionId} style={{ 
+                                                                    background: 'var(--s1)', 
+                                                                    borderRadius: '16px', 
+                                                                    border: '1px solid var(--b)',
+                                                                    overflow: 'hidden'
+                                                                }}>
+                                                                        <div style={{ padding: '12px 16px', background: 'var(--s2)', borderBottom: '1px solid var(--b)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                                                            <span style={{ fontSize: '12px', fontWeight: '600', color: 'var(--tp)' }}>
+                                                                                Batch: {new Date(docs[0].created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}
+                                                                            </span>
+                                                                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                                                                <span style={{ fontSize: '10px', color: 'var(--tm)', background: 'var(--s3)', padding: '2px 8px', borderRadius: '4px' }}>
+                                                                                    {docs.length} Files
+                                                                                </span>
+                                                                                <button 
+                                                                                    onClick={() => handleDownloadBatch(docs, selectedDocumentDate)}
+                                                                                    title="Download All Files as ZIP"
+                                                                                    style={{ 
+                                                                                        background: 'var(--teal-dim)', 
+                                                                                        color: 'var(--teal)', 
+                                                                                        border: '1px solid var(--teal-glow)', 
+                                                                                        borderRadius: '6px', 
+                                                                                        padding: '6px 12px', 
+                                                                                        fontSize: '11px', 
+                                                                                        fontWeight: '700',
+                                                                                        cursor: 'pointer',
+                                                                                        transition: 'all 0.2s ease',
+                                                                                        textTransform: 'uppercase',
+                                                                                        letterSpacing: '0.5px'
+                                                                                    }}
+                                                                                >
+                                                                                    All File Download
+                                                                                </button>
+                                                                            </div>
+                                                                        </div>
+                                                                    <div style={{ padding: '16px', display: 'grid', gap: '12px' }}>
+                                                                        {docs.map(doc => (
+                                                                            <div key={doc.id} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                                                                                <div style={{ color: 'var(--teal)', background: 'var(--teal-dim)', padding: '8px', borderRadius: '8px' }}>
+                                                                                    <FileIcon />
+                                                                                </div>
+                                                                                <div style={{ flex: 1 }}>
+                                                                                    <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--tp)' }}>{doc.title}</div>
+                                                                                    {doc.text_content && (
+                                                                                        <div style={{ fontSize: '12px', color: 'var(--tm)', marginTop: '4px', fontStyle: 'italic', background: 'var(--s2)', padding: '6px', borderRadius: '4px' }}>
+                                                                                            AI Summary: {doc.text_content.slice(0, 150)}...
+                                                                                        </div>
+                                                                                    )}
+                                                                                    {doc.note && (
+                                                                                        <div style={{ fontSize: '13px', color: 'var(--ts)', marginTop: '8px', padding: '10px', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', borderLeft: '3px solid var(--teal)' }}>
+                                                                                            <strong>Note:</strong> {doc.note}
+                                                                                        </div>
+                                                                                    )}
+                                                                                        <div style={{ marginTop: '12px', display: 'flex', gap: '12px' }}>
+                                                                                            <a 
+                                                                                                href={doc.file_url} 
+                                                                                                target="_blank" 
+                                                                                                rel="noopener noreferrer"
+                                                                                                title="View Document"
+                                                                                                style={{ 
+                                                                                                    color: 'var(--teal)', 
+                                                                                                    background: 'var(--teal-dim)',
+                                                                                                    width: '32px',
+                                                                                                    height: '32px',
+                                                                                                    borderRadius: '6px',
+                                                                                                    display: 'flex',
+                                                                                                    alignItems: 'center',
+                                                                                                    justifyContent: 'center',
+                                                                                                    border: '1px solid var(--teal-glow)'
+                                                                                                }}
+                                                                                            >
+                                                                                                <Eye size={16} />
+                                                                                            </a>
+                                                                                            <button 
+                                                                                                onClick={() => handleDownloadDocument(doc)}
+                                                                                                title="Download File"
+                                                                                                style={{ 
+                                                                                                    background: 'var(--s3)', 
+                                                                                                    border: '1px solid var(--b)', 
+                                                                                                    color: 'var(--ts)', 
+                                                                                                    width: '32px',
+                                                                                                    height: '32px',
+                                                                                                    borderRadius: '6px',
+                                                                                                    display: 'flex',
+                                                                                                    alignItems: 'center',
+                                                                                                    justifyContent: 'center',
+                                                                                                    cursor: 'pointer',
+                                                                                                    transition: 'all 0.2s ease'
+                                                                                                }}
+                                                                                            >
+                                                                                                <Download size={16} />
+                                                                                            </button>
+                                                                                        </div>
+                                                                                </div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                </div>
+                                                            ))
+                                                        }
+                                                    </div>
+
+                                                    {/* ACTIVITY HISTORY (DASHBOARD STYLE) */}
+                                                    <div style={{ marginTop: '40px', padding: '20px', background: 'var(--s1)', borderRadius: '16px', border: '1px solid var(--b)' }}>
+                                                        <div style={{ fontSize: '14px', fontWeight: '600', color: 'var(--tp)', marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                                            <span style={{ color: 'var(--teal)' }}>📄</span> Activity History
+                                                        </div>
+                                                        <div style={{ display: 'grid', gap: '10px' }}>
+                                                            {selectedDocumentDate && documentsByDate[selectedDocumentDate] && (
+                                                                Object.values(documentsByDate[selectedDocumentDate]).flat()
+                                                                    .flatMap(doc => (doc.history || []).map((h, idx) => ({ ...h, docName: doc.title, idx })))
+                                                                    .sort((a,b) => (b.time || "").localeCompare(a.time || ""))
+                                                                    .map((h, i) => (
+                                                                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '12px', color: 'var(--ts)' }}>
+                                                                            <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--teal)' }}></div>
+                                                                            <span style={{ color: 'var(--tp)', fontWeight: '500' }}>{h.docName}</span>
+                                                                            <span>{h.event} at {h.time}</span>
+                                                                        </div>
+                                                                    ))
+                                                            )}
+                                                        </div>
+                                                    </div>
+                                                    </main>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                {!recordsSearchResult && (
+                                    <div style={{ marginTop: '10px' }}>
+                                        <div className="dp-section-heading" style={{ marginTop: '30px' }}>
+                                            <h2 className="dp-section-title">My Registered Patients</h2>
+                                        </div>
+                                        <input
+                                            className="dark-input"
+                                            style={{ marginBottom: 18, width: "100%", maxWidth: 400 }}
+                                            type="text"
+                                            placeholder="Filter local patients by name..."
+                                            value={patientSearch}
+                                            onChange={e => setPatientSearch(e.target.value)}
+                                        />
+                                        {patientsLoading ? (
+                                            <div style={{ color: '#7a8ba7', padding: 30 }}>Loading patients...</div>
+                                        ) : filteredPatients.length === 0 ? (
+                                            <div style={{ color: '#ffb4b4', padding: 30 }}>No patients found.</div>
+                                        ) : (
+                                            <div className="dp-patient-list">
+                                                {filteredPatients.map((p, idx) => (
+                                                    <div className="dp-patient-row" key={p.id || idx}>
+                                                        <div className="dp-pt-avatar" style={{ background: '#0cb8a033', color: '#0cb8a0' }}>{getInitialsFromText(p.name || p.email || p.phone)}</div>
+                                                        <div className="dp-pt-info">
+                                                            <div className="dp-pt-name">{p.name || 'Unknown'}</div>
+                                                            <div className="dp-pt-sub">{p.email || p.phone || ''}</div>
+                                                        </div>
+                                                        <div className="dp-pt-status ps-in">Active</div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
                                     </div>
                                 )}
                             </div>
@@ -1406,8 +1749,30 @@ export default function DoctorPanel({ currentUser, onLogout, onUserUpdate = () =
                                     )}
                                 </div>
                             </div>
-                        ) : (
-                            <>
+                        ) : activeTab === 'emergency' ? (
+                             <div className="dp-card">
+                                 <div className="dp-section-heading">
+                                     <h2 className="dp-section-title">Emergency Cases</h2>
+                                 </div>
+                                 <div className="dp-appointment-empty">
+                                     <div className="dp-empty-icon">🚨</div>
+                                     <div className="dp-empty-text">No active emergencies</div>
+                                     <div className="dp-empty-sub">Emergency cases will appear here as high-priority alerts.</div>
+                                 </div>
+                             </div>
+                         ) : activeTab === 'ai' ? (
+                             <div className="dp-card">
+                                 <div className="dp-section-heading">
+                                     <h2 className="dp-section-title">AI Assistant</h2>
+                                 </div>
+                                 <div className="dp-appointment-empty">
+                                     <div className="dp-empty-icon">🤖</div>
+                                     <div className="dp-empty-text">AI Assistant Coming Soon</div>
+                                     <div className="dp-empty-sub">I can help you analyze records and summarize patient history soon.</div>
+                                 </div>
+                             </div>
+                         ) : (
+                             <>
                                 {/* Hero */}
                                 <div className="dp-hero">
                                     <div className="dp-hero-left">
